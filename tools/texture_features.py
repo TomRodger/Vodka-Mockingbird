@@ -44,8 +44,16 @@ def binarise(win):
 
 
 def colour_feat(win):
-    """Median Lab colour. Lab distance roughly matches perceived difference."""
-    return np.median(rgb2lab(win).reshape(-1, 3), axis=0)
+    """Median Lab colour of the FILL. Lab distance roughly matches perceived difference.
+
+    Fill = the brightest quarter of the pixels: linework is always the darkest part of a
+    pattern. A threshold relative to the median (or the brightest half) fails when
+    linework covers most of a small window: on the example some 16x16 windows are over
+    half black, so the 'fill' came out black and 'texture + colour' scored worse than
+    texture alone at 16 px."""
+    lab = rgb2lab(win).reshape(-1, 3)
+    g = to_gray(win).reshape(-1)
+    return np.median(lab[g >= np.percentile(g, 75)], axis=0)
 
 
 # ---------------------------------------------------------------- FFT

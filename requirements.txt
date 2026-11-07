@@ -10,5 +10,8 @@ Pillow==13.0.0
 rapidocr==3.10.0
 onnxruntime==1.31.1
 
+# Tools (tools/)
+scikit-image
+
 # Tests
 pytest

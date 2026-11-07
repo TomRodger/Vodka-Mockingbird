@@ -9,7 +9,7 @@ Run from the repo root:
   python -m tools.label_tool show STEM --y0 10335 --height 2000
       renders the section (zoomed, with a pixel ruler) and the legend into
       out/views/, and writes a DRAFT label file
-      tools/labels/STEM__y10335.txt with guessed boundaries
+      tools/labels/STEM__y10335.txt with boundaries from lithology.segment
 
   python -m tools.label_tool check tools/labels/STEM__y10335.txt
       validates your edited label file, writes the matching .csv, and renders
@@ -27,11 +27,11 @@ import sys
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from scipy.ndimage import median_filter
 
 Image.MAX_IMAGE_PIXELS = None
 
 from lithology.data import DATASET_ANNOTATIONS as ANN_DIR, DATASET_IMAGES as IMAGES_DIR, OUT_DIR
+from lithology.segment import detect_boundaries, section_edge_margins
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LABELS_DIR = os.path.join(HERE, "labels")          # label files: committed, they're ground truth
@@ -154,24 +154,15 @@ def save_legend(im, boxes, stem):
 # ---------------------------------------------------------------- draft boundaries
 
 def draft_boundaries(im, box, y0, y1):
-    """Guess boundaries from changes in FILL COLOUR only. Only a draft:
-    it cannot see texture-only changes (so it finds nothing in black-and-white
-    documents) and may add a few false lines. Check every line."""
-    a = np.asarray(im.crop((box[0], y0, box[2], y1)).convert("RGB"), dtype=float) / 255
-    H, W = a.shape[:2]
-    t = max(1, W // 8)
-    inner = a[:, t:W - t]
-    sig = median_filter(np.median(inner, axis=1), size=(7, 1))   # fill colour per row
-    k = 4
-    score = np.zeros(H)
-    score[k:H - k] = np.abs(sig[2 * k:] - sig[:-2 * k]).sum(axis=1) / 0.25
-    peaks = []
-    for y in np.argsort(-score):
-        if score[y] < 1:
-            break
-        if all(abs(y - p) > 8 for p in peaks):
-            peaks.append(int(y))
-    return sorted(y0 + p for p in peaks if 6 < p < H - 6)
+    """Draft cuts for rows y0..y1, from the pipeline's own segmentation (lithology.segment).
+
+    Only a starting point: it can still miss very thin beds or add a false cut, and using
+    it means labels start from our own guesses, so correct every line rather than
+    accepting it. (The old draft measured each row's colour from ALL pixels, so dash
+    rows read as colour changes and drew lines all through shale.)"""
+    section = (box[0], y0, box[2], y1)
+    cuts = detect_boundaries(im.crop(section), edge_margin=section_edge_margins(section, box))
+    return [y0 + c for c in cuts[1:-1]]
 
 
 # ---------------------------------------------------------------- label files
@@ -237,12 +228,7 @@ def cmd_show(args):
     im = Image.open(img)
 
     txt = label_path(stem, y0, "txt")
-    if im.mode == "1":
-        peaks = []
-        print("Black-and-white image: no colour to draft from, so the draft is one interval. "
-              "Add a line for every boundary yourself, reading rows off the ruler.")
-    else:
-        peaks = draft_boundaries(im, lith, y0, y1)
+    peaks = draft_boundaries(im, lith, y0, y1)
     if os.path.exists(txt) and not args.force:
         print(f"Label file exists, NOT overwriting your edits: {txt}\n"
               f"(use --force to replace it with a fresh draft)")
