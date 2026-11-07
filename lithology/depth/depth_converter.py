@@ -7,20 +7,27 @@ to a printed depth. This file uses that ruler to find each layer's top and base.
 import argparse
 import csv
 from bisect import bisect_right
-from math import isfinite
+from math import isfinite, nan
 from pathlib import Path
+from statistics import median
+
+# Default allowance beyond the first/last readable label, in label gaps.
+# Why: OCR often misses the label at the very top or bottom of the ruler (on the
+# example the 25400 label is cut off, leaving the first interval 395 px = 0.99
+# gaps above the first marker). Measuring in gaps rather than pixels makes the
+# same rule work at every scan resolution. 1.5 covers one missing label with
+# margin; further out, a straight-line guess is no longer trustworthy.
+DEFAULT_EXTRAPOLATION_GAPS = 1.5
 
 
 class DepthConverter:
     """Store one scan's ruler so we can use it for every layer in that scan."""
 
-    def __init__(self, markers, max_extrapolation_pixels=0):
+    def __init__(self, markers, max_extrapolation_pixels=None):
         # markers contains (pixel_y, depth) pairs from extract_depths.py.
-        # Normally we only calculate between known labels. A caller can choose
-        # a small pixel allowance beyond the first/last label if needed.
-        self.max_extrapolation_pixels = float(max_extrapolation_pixels)
-        if not isfinite(self.max_extrapolation_pixels) or self.max_extrapolation_pixels < 0:
-            raise ValueError("Extrapolation limit must be a finite non-negative number.")
+        # max_extrapolation_pixels: how far beyond the first/last label we will
+        # extrapolate. None means DEFAULT_EXTRAPOLATION_GAPS x the median gap
+        # between labels; pass 0 to forbid extrapolation.
         # Put ruler labels in order from the top of the image to the bottom.
         self.markers = sorted((float(y), float(depth)) for y, depth in markers)
         if len(self.markers) < 2:
@@ -32,6 +39,12 @@ class DepthConverter:
             if y2 <= y1 or d2 <= d1:
                 raise ValueError("Pixel positions and depths must both increase.")
         self.positions = [y for y, _ in self.markers]
+        if max_extrapolation_pixels is None:
+            gaps = [b - a for a, b in zip(self.positions, self.positions[1:])]
+            max_extrapolation_pixels = DEFAULT_EXTRAPOLATION_GAPS * median(gaps)
+        self.max_extrapolation_pixels = float(max_extrapolation_pixels)
+        if not isfinite(self.max_extrapolation_pixels) or self.max_extrapolation_pixels < 0:
+            raise ValueError("Extrapolation limit must be a finite non-negative number.")
 
     def depth_at(self, y):
         """Find the depth at one image row using the nearest ruler labels."""
@@ -54,15 +67,22 @@ class DepthConverter:
         # Copy the row so teammates' input is untouched. Keep any lithology or
         # cluster fields they have already added.
         result = dict(interval)
-        result["top_depth"] = self.depth_at(top_y)
-        result["base_depth"] = self.depth_at(bottom_y)
-        if self.max_extrapolation_pixels:
-            # Tell the caller when a result extends beyond readable labels.
-            result["depth_extrapolated"] = top_y < self.positions[0] or bottom_y > self.positions[-1]
+        # A boundary too far outside the ruler becomes NaN instead of raising:
+        # one unreadable boundary should cost one cell, not the whole document.
+        result["top_depth"] = self._depth_or_nan(top_y)
+        result["base_depth"] = self._depth_or_nan(bottom_y)
+        # Tell the caller when a depth is a straight-line guess beyond readable labels.
+        result["depth_extrapolated"] = top_y < self.positions[0] or bottom_y > self.positions[-1]
         # Some code calls the base 'bottom_depth'. Update that name too if used.
         if "bottom_depth" in result:
             result["bottom_depth"] = result["base_depth"]
         return result
+
+    def _depth_or_nan(self, y):
+        try:
+            return self.depth_at(y)
+        except ValueError:
+            return nan
 
 
 def main():
@@ -71,8 +91,9 @@ def main():
     parser.add_argument("--markers", type=Path, help="CSV with pixel_y,depth columns")
     parser.add_argument("--intervals", type=Path, help="CSV with top_y,bottom_y columns")
     parser.add_argument("--output", type=Path, help="Destination CSV (must be a new file)")
-    parser.add_argument("--max-extrapolation-pixels", type=float, default=0,
-                        help="Allow this many pixels beyond known markers; default 0")
+    parser.add_argument("--max-extrapolation-pixels", type=float, default=None,
+                        help="Allow this many pixels beyond known markers; "
+                             f"default {DEFAULT_EXTRAPOLATION_GAPS} x the median label gap")
     args = parser.parse_args()
     if not all((args.markers, args.intervals, args.output)):
         parser.error("Provide --markers, --intervals and --output.")
