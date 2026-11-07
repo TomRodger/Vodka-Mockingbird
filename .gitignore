@@ -8,6 +8,15 @@ __pycache__/
 .venv/
 .ruff_cache/
 .pytest_cache/
+.python-packages/
+/lithology/depth/results/
+
+# Generated pipeline outputs (CSVs, overlays, montages, tool views)
+/out/
+*_annotated.png
+*_crop.png
+*_intervals.csv
+!tools/labels/*.csv
 
 # Node
 node_modules/
