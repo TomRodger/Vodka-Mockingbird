@@ -8,6 +8,8 @@ __pycache__/
 .venv/
 .ruff_cache/
 .pytest_cache/
+.python-packages/
+/hack27/project/depth/results/
 
 # Node
 node_modules/
