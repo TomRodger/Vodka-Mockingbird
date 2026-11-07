@@ -79,7 +79,7 @@ def _row_signals(crop, chunk=20000):
     for i in np.where(bad)[0]:
         colour[i] = colour[i - 1] if i > 0 else 1.0
     return dict(ink=ink_n, h_starts=h_n, v_starts=v_n,
-                colour=median_filter(colour, size=(7, 1)), width=a.shape[1])
+                colour=median_filter(colour, size=(7, 1)), colour_raw=colour, width=a.shape[1])
 
 
 def _pattern_period(ink, lo=6, hi=120):
@@ -166,6 +166,19 @@ def detect_boundaries(crop_pil, band=32, texture_threshold=0.7, colour_rows=4,
         c = s["colour"]
         col[k:H - k] = np.abs(c[2 * k:] - c[:-2 * k]).sum(axis=1)
     colour_rows_found = _peaks(col, colour_gap, colour_threshold)
+
+    # Refine each colour cut to where the UNSMOOTHED fill colour changes most nearby. The
+    # smoothed comparison finds that the colour changes, but its peak spreads outwards: on
+    # mc761 cuts sat 3-4 rows above a thin bed's top and 3 rows below its bottom, i.e. in
+    # the shale either side. The window (+-colour_rows+1) is small enough that a bed's top
+    # and bottom cuts can't both snap to the same edge.
+    raw = s["colour_raw"]
+    step = np.zeros(H)
+    if H > 4:
+        step[2:H - 1] = np.abs(raw[2:H - 1] + raw[3:H] - raw[0:H - 3] - raw[1:H - 2]).sum(axis=1) / 2
+    w = colour_rows + 1
+    colour_rows_found = sorted({int(max(0, y - w) + np.argmax(step[max(0, y - w): y + w + 1]))
+                                for y in colour_rows_found})
 
     # combine: colour boundaries are sharper, so they win when both fire close together
     found = sorted(colour_rows_found)
