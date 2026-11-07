@@ -1,0 +1,20 @@
+# 0000000009_d-582_0000020435-0001_log06_fe_5in_md
+# From the organisers' example.csv (their ground truth).
+4409 Shale
+4809 Siltstone
+5010 Shale
+6211 Siltstone
+6411 Shale
+6611 Sandstone
+6811 Siltstone
+7012 Sandstone
+7212 Siltstone
+7412 Shale
+7612 Sandstone
+7812 Shale
+8013 Siltstone
+8213 Shale
+9014 Sandstone
+9214 Shale
+10215 Siltstone
+10415 END

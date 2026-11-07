@@ -1,20 +1,37 @@
-# clustering
+# lithology: the pipeline
 
-Groups lithology intervals by visual pattern. Takes intervals from `backend/app/task1.py`
-(or any CSV with `top_y,bottom_y`), uses the shared `extracting_pattern/FeatureExtractor`,
+One module per stage. All stages pass intervals around as **pixel rows of the ORIGINAL full
+image** (`top_y`, `bottom_y`); nothing resizes coordinates. Run everything from the repo root.
+
+| module | stage | run |
+|---|---|---|
+| `segment.py` | 1. find interval boundaries in the lithology column | `python -m lithology.segment IMAGE JSON [PREFIX]` |
+| `cluster.py` | 2. group intervals by visual pattern | `python -m lithology.cluster IMAGE JSON [--intervals CSV]` |
+| `depth/` | 4. read the depth ruler, convert rows to depths | see `depth/README.md` |
+| `features.py` | shared features: column intervals *and* legend swatches | |
+| `data.py` | dataset paths, annotation loading, cropping | |
+| `output.py` | CSV and image writers | |
+| `evaluate.py` | scoring against truth; the example check | `python -m lithology.evaluate` |
+
+Stage 3 (legend matching: a rock name per cluster) and the final CSV + annotated image the
+brief asks for are not built yet. Legend matching should use `features.py` and the
+`*_representatives.json` that clustering writes.
+
+# Clustering (stage 2)
+
+Groups lithology intervals by visual pattern. Takes intervals from `lithology.segment`
+(or any CSV with `top_y,bottom_y`), uses the shared `FeatureExtractor` in `features.py`,
 and outputs a `cluster_id` and confidence per interval, merged intervals, and one
 representative per cluster for legend matching.
 
-Needs `opencv-python numpy pillow scipy scikit-learn`. Run from the repo root.
-
 ```
-python clustering/cluster.py --example                 # both checks on the organisers' example
-python clustering/cluster.py IMAGE BBOX_JSON            # task1 segmentation -> clustering
-python clustering/cluster.py IMAGE BBOX_JSON --intervals my.csv --truth labels.csv
-python clustering/cluster.py IMAGE BBOX_JSON --y0 9053 --y1 11053     # a section only
+python -m lithology.evaluate                                      # the example check
+python -m lithology.cluster IMAGE JSON                            # segmentation -> clustering
+python -m lithology.cluster IMAGE JSON --intervals my.csv --truth labels.csv
+python -m lithology.cluster IMAGE JSON --y0 9053 --y1 11053       # a section only
 ```
 
-## Outputs (in `clustering/out/`)
+## Outputs (in `out/`, git-ignored)
 
 | file | contents |
 |---|---|
@@ -56,18 +73,18 @@ extractor's mask. `--texture team` uses the extractor's own 16×16 `fft_features
 
 ## Current results
 
-With the band-based `task1.py` (see its comments), on the example (the only labelled data):
+With the band-based segmentation (`segment.py`, see its comments), on the example (the only labelled data):
 
 | input | texture | clusters | row ARI | boundary recall / precision (±20 px) |
 |---|---|---|---|---|
 | true intervals | pooled | 3 | **1.000** | 1.00 / 1.00 |
 | true intervals | team | 1 | 0.000 | – |
-| task1 segmentation | pooled | 3 | **0.988** | 1.00 / 1.00 |
-| task1 segmentation | team | 1 | 0.000 | – |
+| segmentation | pooled | 3 | **0.988** | 1.00 / 1.00 |
+| segmentation | team | 1 | 0.000 | – |
 
-Before the task1 rewrite, task1 + pooled scored row ARI 0.100 (task1 found 5/16 boundaries).
+Before the segmentation rewrite, segmentation + pooled scored row ARI 0.100 (it found 5/16 boundaries).
 
-task1 on the whole example column gives 19 intervals: 16 cuts within 0–6 px of a true boundary,
+Segmentation on the whole example column gives 19 intervals: 16 cuts within 0–6 px of a true boundary,
 the end of logged rock found 17 px late (row 10432 vs 10415; blank paper below), and one false
 cut at row 6356, where a siltstone pattern visibly fades. Clustering merges that one away.
 
@@ -101,5 +118,5 @@ Unlabelled colour sections (checked by eye in the montages):
   ~3.6 GB peak on the tallest log (1680 × 313,800). Strip-wise TIFF reading (e.g. `tifffile`)
   would fix it for every script.
 - **Strip-based clustering** (cluster fixed-height strips, then vote) was prototyped before
-  the task1 rewrite. It's no longer needed for the example, but might help documents where
+  the segmentation rewrite. It's no longer needed for the example, but might help documents where
   segmentation still misses boundaries.

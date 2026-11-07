@@ -360,7 +360,7 @@ def extract(image_path, annotation_path, output_dir, chunk_height=1200, engine=N
 
 def main():
     """Allow extraction to be run from the terminal with image/JSON paths."""
-    project = Path(__file__).resolve().parent.parent
+    project = Path(__file__).resolve().parents[2] / "hack27" / "project"   # organisers' material
     default_image = project / "example/0000000009_d-582_0000020435-0001_log06_fe_5in_md.tif"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, default=default_image)

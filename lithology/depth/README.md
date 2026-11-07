@@ -58,16 +58,17 @@ abrupt changes in scale are still rejected.
 
 ## Run from the terminal
 
-From the repository folder (`Vodka-Mockingbird`):
+From the repository root, install the pipeline's dependencies once (they include
+this folder's OCR packages):
 
 ```powershell
-cd hack27/project/depth
-py -m pip install --target .python-packages -r requirements.txt
+py -m pip install -r requirements.txt
 ```
 
-Replace the placeholder paths below with your files:
+Then, from this folder (`lithology/depth`), replace the placeholder paths with your files:
 
 ```powershell
+cd lithology/depth
 py extract_depths.py --image "path/to/scan.tif" --annotation "path/to/scan.json" --output-dir results/my_scan
 py depth_converter.py --markers results/my_scan/markers.csv --intervals "path/to/layers.csv" --output results/my_scan/layers_with_depths.csv
 ```
@@ -82,12 +83,12 @@ OCR means reading text from an image. Dependencies and results are ignored by Gi
 
 ## Use from Python
 
-With this folder on the Python import path:
+From the repository root:
 
 ```python
 from pathlib import Path
-from extract_depths import extract
-from depth_converter import DepthConverter
+from lithology.depth.extract_depths import extract
+from lithology.depth.depth_converter import DepthConverter
 
 # Read the ruler once for this scan.
 markers = extract(Path("scan.tif"), Path("scan.json"), Path("results/my_scan"))

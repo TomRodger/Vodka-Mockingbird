@@ -1,50 +1,22 @@
+"""Stage 1 - segmentation: find where one rock ends and the next begins.
+
+    python -m lithology.segment IMAGE ANNOTATION_JSON [OUTPUT_PREFIX]
+
+Input: the interpreted lithology column (cropped with the annotation box).
+Output: intervals [{"top_y", "bottom_y"}] in full-image pixel rows, also saved as
+<prefix>_intervals.csv for `python -m lithology.cluster ... --intervals`.
+"""
+
 import csv
-import json
 import sys
 import warnings
 
 import numpy as np
-from PIL import Image, ImageDraw
 from scipy.ndimage import maximum_filter1d, median_filter, uniform_filter1d
 from scipy.signal import find_peaks
 
-# Remove PIL pixel safety limits for ultra-tall well logs
-Image.MAX_IMAGE_PIXELS = None
-
-
-def load_annotation(json_path):
-    """Loads bounding box annotations from JSON."""
-    with open(json_path, "r") as f:
-        data = json.load(f)
-    return data["bounding_boxes"]
-
-
-def draw_bounding_boxes(image_path, bounding_boxes, output_path="annotated.png", max_height=4000):
-    """Draws all annotated bounding boxes on a shrunken overview of the document.
-
-    The page is converted to RGB a strip at a time and shrunk as it goes, so a
-    300,000-px-tall log never has to exist at full size in memory (that would be ~1.6 GB).
-    """
-    image = Image.open(image_path)
-    scale = min(1.0, max_height / image.height)
-    out = Image.new("RGB", (max(1, round(image.width * scale)), max(1, round(image.height * scale))))
-    strip = 4000
-    for ys in range(0, image.height, strip):
-        ye = min(ys + strip, image.height)
-        part = image.crop((0, ys, image.width, ye)).convert("RGB")
-        top, bottom = round(ys * scale), round(ye * scale)
-        out.paste(part.resize((out.width, max(1, bottom - top))), (0, top))
-    draw = ImageDraw.Draw(out)
-    for name, (x1, y1, x2, y2) in bounding_boxes.items():
-        draw.rectangle((x1 * scale, y1 * scale, x2 * scale, y2 * scale), outline="red", width=3)
-    out.save(output_path)
-    print(f"Saved annotated overview to {output_path}")
-
-
-def crop_column(image_path, box):
-    """Crops a region from the image given a bounding box [x1, y1, x2, y2]."""
-    image = Image.open(image_path)
-    return image.crop(tuple(box))
+from .data import crop_column, load_annotation
+from .output import draw_bounding_boxes
 
 
 # ---------------------------------------------------------------- boundary detection
@@ -213,7 +185,7 @@ def build_intervals(boundaries, crop_y_start):
 def main():
     # Check if user provided the required file paths
     if len(sys.argv) < 3:
-        print("Usage: python script.py <image_path> <annotation_json_path> [output_prefix]")
+        print("Usage: python -m lithology.segment <image_path> <annotation_json_path> [output_prefix]")
         sys.exit(1)
 
     image_path = sys.argv[1]
@@ -236,7 +208,7 @@ def main():
     boundaries = detect_boundaries(lithology_crop)
     intervals = build_intervals(boundaries, crop_y_start)
 
-    # 5. Save them for the clustering step (python clustering/cluster.py ... --intervals)
+    # 5. Save them for the clustering step (python -m lithology.cluster ... --intervals)
     with open(f"{prefix}_intervals.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["top_y", "bottom_y"])
         w.writeheader()

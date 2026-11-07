@@ -1,0 +1,14 @@
+# Pipeline (lithology/) and tools (tools/). Install from the repo root:
+#   pip install -r requirements.txt
+numpy
+scipy
+scikit-learn
+opencv-python
+
+# Pins carried over from lithology/depth (OCR for the depth ruler)
+Pillow==13.0.0
+rapidocr==3.10.0
+onnxruntime==1.31.1
+
+# Tests
+pytest
