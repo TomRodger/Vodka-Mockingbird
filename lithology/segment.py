@@ -1,22 +1,24 @@
 """Stage 1 - segmentation: find where one rock ends and the next begins.
 
-    python -m lithology.segment IMAGE ANNOTATION_JSON [OUTPUT_PREFIX]
+    python -m lithology.segment IMAGE ANNOTATION_JSON [OUTPUT_PREFIX] [--y0 ROW --y1 ROW] [--truth CSV]
 
 Input: the interpreted lithology column (cropped with the annotation box).
 Output: intervals [{"top_y", "bottom_y"}] in full-image pixel rows, also saved as
-<prefix>_intervals.csv for `python -m lithology.cluster ... --intervals`.
+<prefix>_intervals.csv for `python -m lithology.cluster ... --intervals`, and an image of
+the cuts on the column, <prefix>_segments.png (true boundaries beside them with --truth).
 """
 
+import argparse
 import csv
-import sys
+import os
 import warnings
 
 import numpy as np
 from scipy.ndimage import maximum_filter1d, median_filter, uniform_filter1d
 from scipy.signal import find_peaks
 
-from .data import crop_column, load_annotation
-from .output import draw_bounding_boxes
+from .data import OUT_DIR, crop_column, load_annotation, read_intervals
+from .output import draw_bounding_boxes, save_segments
 
 
 # ---------------------------------------------------------------- boundary detection
@@ -121,7 +123,10 @@ def detect_boundaries(crop_pil, band=32, texture_threshold=0.7, colour_rows=4,
                          so a smaller value leaves slivers between the two detections.
       edge_margin:       ignore boundaries this close to the crop's top/bottom. Those are the
                          column's own border lines, which otherwise cut off thin slivers
-                         (on the example: 4 px at the top, 15 px at the bottom).
+                         (on the example: 4 px at the top, 15 px at the bottom). Give
+                         (top, bottom) to set them separately: use 0 for an edge that is a
+                         section cut rather than the real column edge, or a real boundary
+                         just inside a section gets dropped.
     """
     if min_distance is None:
         min_distance = band
@@ -167,8 +172,16 @@ def detect_boundaries(crop_pil, band=32, texture_threshold=0.7, colour_rows=4,
     for y in texture_rows:
         if all(abs(y - c) >= min_distance for c in found):
             found.append(y)
-    found = sorted(set(y for y in found if edge_margin <= y <= H - edge_margin))
+    top_m, bot_m = edge_margin if isinstance(edge_margin, (tuple, list)) else (edge_margin, edge_margin)
+    found = sorted(set(y for y in found if top_m <= y <= H - bot_m))
     return [0] + found + [H]
+
+
+def section_edge_margins(section_box, column_box, margin=20):
+    """edge_margin for detect_boundaries when segmenting a section of the column: the border
+    rule applies only where the section edge IS the column edge."""
+    return (margin if section_box[1] <= column_box[1] else 0,
+            margin if section_box[3] >= column_box[3] else 0)
 
 
 def build_intervals(boundaries, crop_y_start):
@@ -183,29 +196,34 @@ def build_intervals(boundaries, crop_y_start):
 
 
 def main():
-    # Check if user provided the required file paths
-    if len(sys.argv) < 3:
-        print("Usage: python -m lithology.segment <image_path> <annotation_json_path> [output_prefix]")
-        sys.exit(1)
-
-    image_path = sys.argv[1]
-    json_path = sys.argv[2]
-    prefix = sys.argv[3] if len(sys.argv) > 3 else "out"
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("image_path")
+    ap.add_argument("json_path")
+    ap.add_argument("prefix", nargs="?", help="output file prefix (default: out/<scan name>)")
+    ap.add_argument("--y0", type=int, help="first row of a section to segment (default: whole column)")
+    ap.add_argument("--y1", type=int, help="last row of the section")
+    ap.add_argument("--truth", help="CSV with top_y (e.g. example.csv): drawn as green ticks to compare")
+    a = ap.parse_args()
+    prefix = a.prefix or os.path.join(OUT_DIR, os.path.splitext(os.path.basename(a.image_path))[0])
+    os.makedirs(os.path.dirname(prefix) or ".", exist_ok=True)
 
     # 1. Load annotations
-    bounding_boxes = load_annotation(json_path)
+    bounding_boxes = load_annotation(a.json_path)
 
     # 2. Draw annotated overview (shrunk, memory-safe)
-    draw_bounding_boxes(image_path, bounding_boxes, output_path=f"{prefix}_annotated.png")
+    draw_bounding_boxes(a.image_path, bounding_boxes, output_path=f"{prefix}_annotated.png")
 
-    # 3. Crop target lithology column
-    lith_box = bounding_boxes["interpreted_lithology_column"]
+    # 3. Crop target lithology column (or the requested section of it)
+    column = bounding_boxes["interpreted_lithology_column"]
+    lith_box = list(column)
+    lith_box[1] = max(a.y0 or lith_box[1], lith_box[1])
+    lith_box[3] = min(a.y1 or lith_box[3], lith_box[3])
     crop_y_start = lith_box[1]
-    lithology_crop = crop_column(image_path, lith_box)
+    lithology_crop = crop_column(a.image_path, lith_box)
     lithology_crop.save(f"{prefix}_crop.png")
 
-    # 4. Detect boundaries & generate full-image intervals
-    boundaries = detect_boundaries(lithology_crop)
+    # 4. Detect boundaries & generate full-image intervals (border rule only at real column edges)
+    boundaries = detect_boundaries(lithology_crop, edge_margin=section_edge_margins(lith_box, column))
     intervals = build_intervals(boundaries, crop_y_start)
 
     # 5. Save them for the clustering step (python -m lithology.cluster ... --intervals)
@@ -214,7 +232,13 @@ def main():
         w.writeheader()
         w.writerows(intervals)
 
-    print(f"[{prefix}] Detected {len(intervals)} lithology intervals -> {prefix}_intervals.csv")
+    # 6. Draw the cuts on the column, to check by eye (with the truth beside them if given)
+    truth = read_intervals(a.truth) if a.truth else None
+    save_segments(f"{prefix}_segments.png", np.asarray(lithology_crop.convert("RGB")),
+                  crop_y_start, intervals, truth)
+
+    print(f"Detected {len(intervals)} lithology intervals -> {prefix}_intervals.csv")
+    print(f"Cuts drawn on the column -> {prefix}_segments.png")
     for interval in intervals[:5]:
         print(interval)
 

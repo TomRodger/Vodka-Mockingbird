@@ -3,7 +3,7 @@
 numpy
 scipy
 scikit-learn
-opencv-python
+opencv-python-headless   # the OCR package needs this one; two OpenCVs clash
 
 # Pins carried over from lithology/depth (OCR for the depth ruler)
 Pillow==13.0.0
