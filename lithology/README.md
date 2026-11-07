@@ -68,8 +68,32 @@ gives it a rock name. The example's column is blank below row 10432.
 5. **Merge** touching same-cluster intervals, re-describe the merged ones and repeat
    (up to 3 rounds).
 
-`--texture pooled` (default) is a windowed, tiled FFT pooled into 24 bins, computed on the
-extractor's mask. `--texture team` uses the extractor's own 16×16 `fft_features`.
+`--texture pooled` (default) uses the shared extractor's 24-value pooled FFT.
+`--texture team` remains accepted for compatibility and now uses the same descriptor
+and thresholds; it no longer selects the old 16×16 spectrum.
+
+## Shared features for layers and legend swatches
+
+`FeatureExtractor.extract(image)` takes a non-empty **uint8 BGR** image and returns:
+
+| field | meaning |
+|---|---|
+| `median_colour` | 3 background colour values in BGR order |
+| `pattern_mask` | 2-D uint8 mask: 255 for dark linework, 0 for background |
+| `pattern_density` | fraction of pixels marked as linework |
+| `fft_features` | **24** pooled frequency values describing spacing and direction |
+| `has_pattern` | whether the patch passed the extractor's contrast check |
+
+`build_vector(features)` returns **28 values**, replacing the old 260-value vector:
+3 normalised BGR colours, 1 density and 24 texture values. Rebuild saved feature
+vectors if they used the old representation. Layers and legend swatches must use
+the same descriptor; these features do not themselves identify rock names.
+
+Solid fills, including pure black, keep their background colour and get zero mask,
+density and texture. Small grey-level variations are treated as scanner noise.
+The default minimum contrast is 12 levels out of 255; use
+`FeatureExtractor(min_contrast=...)` deliberately when processing very faint patterns.
+Clustering additionally keeps its own stricter no-pattern/blank/thin-interval guards.
 
 ## Current results
 
@@ -78,9 +102,7 @@ With the band-based segmentation (`segment.py`, see its comments), on the exampl
 | input | texture | clusters | row ARI | boundary recall / precision (±20 px) |
 |---|---|---|---|---|
 | true intervals | pooled | 3 | **1.000** | 1.00 / 1.00 |
-| true intervals | team | 1 | 0.000 | – |
 | segmentation | pooled | 3 | **0.988** | 1.00 / 1.00 |
-| segmentation | team | 1 | 0.000 | – |
 
 Before the segmentation rewrite, segmentation + pooled scored row ARI 0.100 (it found 5/16 boundaries).
 
@@ -104,8 +126,8 @@ Unlabelled colour sections (checked by eye in the montages):
 
 ## Known limits
 
-- **The team 16×16 FFT doesn't separate the example's rocks.** Same-rock and
-  different-rock distances overlap, so everything lands in one cluster. Use `pooled`.
+- **Very faint patterns:** the extractor's contrast guard can suppress real lines
+  below its configured threshold. Lower it only after checking plain/noisy fills too.
 - **Thin slivers make small extra clusters.** Pieces under 24 px that contain a black
   boundary line or brick row get a skewed colour, so they don't attach to their rock (Rio's
   8 small clusters). Likely fix: drop near-black rows before measuring a thin piece's fill.

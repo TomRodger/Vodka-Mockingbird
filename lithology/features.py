@@ -4,7 +4,7 @@ Input convention: every function takes a BGR uint8 image (cv2.imread order). If 
 crop with Pillow (RGB), convert with `arr[:, :, ::-1]` first, otherwise red and blue
 swap and colour matches between the column and the legend break silently.
 
-    FeatureExtractor.extract(img) -> pattern mask (Otsu), fill colour, density, 16x16 FFT
+    FeatureExtractor.extract(img) -> pattern mask, fill colour, density, 24 pooled FFT values
     bgr_to_lab(bgr)               -> real Lab colour, where distance ~ perceived difference
     pooled_fft(mask)              -> tiled, windowed FFT pooled into 24 spacing x direction bins
 """
@@ -14,19 +14,43 @@ import numpy as np
 
 
 class FeatureExtractor:
+    """Describe dark linework on a fill colour, without naming the rock.
+
+    min_contrast is the minimum useful grey-level spread (0-255). The default
+    ignores small scanner noise; lower it deliberately for very faint patterns.
+    """
+
+    def __init__(self, min_contrast=12):
+        if not np.isfinite(min_contrast) or not 0 <= min_contrast <= 255:
+            raise ValueError("min_contrast must be a finite number from 0 to 255.")
+        self.min_contrast = min_contrast
 
     def extract(self, img):
+        """Return BGR background colour, mask, density and a 24-value texture."""
+        if not isinstance(img, np.ndarray) or img.ndim != 3 or img.shape[2] != 3 or img.size == 0:
+            raise ValueError("Expected a non-empty H x W x 3 BGR image.")
+        if img.dtype != np.uint8:
+            raise ValueError("Expected a uint8 BGR image with values from 0 to 255.")
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        _, pattern_mask = cv2.threshold(
-            gray,
-            0,
-            255,
-            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-        )
+        low, high = np.percentile(gray, [0.1, 99.9])
+        has_pattern = high > low and (high - low) >= self.min_contrast
+        # Otsu will split even tiny variations in plain paper. Skip it for
+        # solid/low-contrast fills, including black, and retain the true colour.
+        if has_pattern:
+            _, pattern_mask = cv2.threshold(
+                gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+            )
+        else:
+            pattern_mask = np.zeros(gray.shape, dtype=np.uint8)
 
         background_pixels = img[pattern_mask == 0]
+        if not background_pixels.size:
+            # A usable background cannot be inferred from an all-ink mask.
+            # Treat it as a fill rather than taking the median of no pixels.
+            pattern_mask = np.zeros(gray.shape, dtype=np.uint8)
+            background_pixels = img.reshape(-1, 3)
+            has_pattern = False
 
         median_colour = np.median(
             background_pixels,
@@ -43,48 +67,24 @@ class FeatureExtractor:
             "median_colour": median_colour,
             "pattern_density": pattern_density,
             "fft_features": fft_features,
-            "pattern_mask": pattern_mask
+            "pattern_mask": pattern_mask,
+            "has_pattern": bool(has_pattern),
         }
 
     def _extract_fft(self, pattern_mask):
-
-        spectrum = np.fft.fft2(
-            pattern_mask.astype(np.float32)
-        )
-
-        spectrum = np.fft.fftshift(
-            spectrum
-        )
-
-        magnitude = np.log(
-            np.abs(spectrum) + 1
-        )
-
-        magnitude = cv2.resize(
-            magnitude,
-            (16, 16)
-        )
-
-        cy = magnitude.shape[0] // 2
-        cx = magnitude.shape[1] // 2
-
-        magnitude[
-            cy-1:cy+2,
-            cx-1:cx+2
-        ] = 0
-
-        magnitude /= (
-            magnitude.max() + 1e-6
-        )
-
-        return magnitude.flatten()
+        # Pool frequency energy instead of resizing the spectrum: resizing
+        # can miss narrow peaks entirely and make different patterns identical.
+        return pooled_fft(pattern_mask)
 
     def build_vector(self, features):
-
+        """28 numbers: 3 normalised BGR colours + density + 24 texture values."""
+        texture = np.asarray(features["fft_features"])
+        if texture.shape != (24,) or not np.isfinite(texture).all():
+            raise ValueError("Expected 24 pooled FFT values; recompute old saved features.")
         return np.concatenate([
             features["median_colour"] / 255.0,
             [features["pattern_density"]],
-            features["fft_features"]
+            texture
         ])
 
 def bgr_to_lab(bgr):
@@ -99,19 +99,23 @@ _grid = {}
 def pooled_fft(mask, nr=6, na=4):
     """FFT texture pooled into spacing (radial) x orientation (angle) bins.
 
-    Computed on FeatureExtractor's pattern mask. Unlike its 16x16 spectrum, this:
+    Used for both interval patches and legend swatches. This descriptor:
       - averages over 32-row tiles, so tall intervals aren't one blurry spectrum
       - applies a Hann window, so tile edges don't add fake frequencies
       - pools into 24 bins in cycles/pixel, which mean the same for any patch size
-    On the example the 16x16 spectrum couldn't separate the three rocks; this does.
+    A solid mask has no texture and returns zeros.
     """
     m = mask.astype(np.float32)
+    if m.ndim != 2 or m.size == 0 or not np.isfinite(m).all():
+        raise ValueError("Expected a non-empty, finite 2-D pattern mask.")
+    if not isinstance(nr, int) or not isinstance(na, int) or nr < 1 or na < 1:
+        raise ValueError("FFT bin counts must be positive integers.")
     h, w = m.shape
     th = 32 if h >= 32 else h
     specs = []
     for y in range(0, h - th + 1, th):
         t = m[y:y + th]
-        key = (th, w)
+        key = (th, w, nr, na)
         if key not in _grid:
             fy = (np.arange(th) - th // 2) / th
             fx = (np.arange(w) - w // 2) / w

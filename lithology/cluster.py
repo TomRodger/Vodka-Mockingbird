@@ -10,6 +10,7 @@
 
 Output (in out/ by default): per-interval CSV with cluster_id / margin / flags, merged CSV,
 representatives.json (the handoff to legend matching), overlay and montage images.
+The legacy --texture team option is an alias for the shared pooled FFT.
 
 How it clusters (each choice is explained where it happens below):
   1. describe each interval: Lab fill colour + texture (from the shared FeatureExtractor's
@@ -32,7 +33,7 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import cdist, squareform
 
 from .data import OUT_DIR, load_annotation, read_intervals
-from .features import FeatureExtractor, bgr_to_lab, pooled_fft
+from .features import FeatureExtractor, bgr_to_lab
 from .output import save_montage, save_overlay, write_csv
 from .segment import build_intervals, detect_boundaries, section_edge_margins
 
@@ -47,7 +48,7 @@ MIN_CONTRAST = 40    # grey-level spread (1st-99th percentile) below this = no p
 TAU_C = 10.0         # Lab Delta-E counted as one unit; ~10 is a clearly visible difference
 NOISE_K = 3.0        # texture counts as different only above NOISE_K x this document's noise
 NOISE_NEIGHBOUR = 3  # noise = distance to each interval's 3rd-nearest neighbour (see texture_unit)
-TAU_T_FLOOR = {"pooled": 0.01, "team": 0.5}   # lower bound on the texture unit
+TAU_T_FLOOR = {"pooled": 0.01, "team": 0.01}  # team is a compatibility alias for pooled
 CUT = 1.0            # merge clusters while their average distance is below this
 LOW_MARGIN = 0.7     # flag intervals this far (in units) from their cluster's centre
 BLANK_L = 95         # a patternless interval this light (Lab L*) and grey is blank paper:
@@ -79,10 +80,10 @@ def describe(col, col_y0, top, bottom, fe, texture):
         tex = None                                       # thin: handled in the second pass
     elif not has_pattern:
         tex = "empty"                                    # solid fill: a texture of its own
-    elif texture == "team":
-        tex = f["fft_features"]
     else:
-        tex = pooled_fft(f["pattern_mask"] > 0)
+        # The shared extractor now supplies pooled FFT for both column
+        # intervals and legend swatches. Do not calculate a second descriptor.
+        tex = f["fft_features"]
 
     mid = max(0, p.shape[0] // 2 - 20)
     n_tiles = max(1, p.shape[0] // 32)          # how many texture samples the estimate averages
@@ -109,7 +110,7 @@ def texture_matrix(descs, idx, texture):
     """Texture vectors for core intervals; 'empty' (no pattern) becomes all zeros, which is far
     from any drawn pattern and identical to other solid fills."""
     dim = next((len(descs[i]["tex"]) for i in idx if not isinstance(descs[i]["tex"], str)),
-               24 if texture == "pooled" else 256)
+               24)
     return np.array([np.zeros(dim) if isinstance(descs[i]["tex"], str) else descs[i]["tex"] for i in idx])
 
 
@@ -347,7 +348,8 @@ def main():
     ap.add_argument("--truth", help="CSV with top_y,bottom_y,lithology for scoring")
     ap.add_argument("--y0", type=int)
     ap.add_argument("--y1", type=int)
-    ap.add_argument("--texture", choices=["pooled", "team"], default="pooled")
+    ap.add_argument("--texture", choices=["pooled", "team"], default="pooled",
+                    help="pooled FFT; team is a compatibility alias using the same descriptor")
     ap.add_argument("--out")
     a = ap.parse_args()
     run(a.image, a.bbox, a.intervals, a.truth, a.y0, a.y1, a.texture, a.out)

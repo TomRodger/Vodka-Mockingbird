@@ -45,8 +45,10 @@ def score(truth, merged, raw_n):
 
 
 def run_example(quiet=False):
-    """Cluster the example with its true intervals and with our segmentation, for both texture
-    options. Returns {(input, texture): result dict}."""
+    """Check true and detected intervals; also verify the legacy team alias.
+
+    Both option names now use pooled FFT. Returns {(input, texture): result dict}.
+    """
     from .cluster import run          # imported here: cluster imports this module's score()
     results = {}
     for source, iv in (("true intervals", EXAMPLE_TRUTH), ("segmentation", None)):
