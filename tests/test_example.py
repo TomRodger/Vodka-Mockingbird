@@ -20,3 +20,8 @@ def test_example_scores():
     assert seg["b_recall"] >= 0.95             # finds (almost) every true boundary
     assert seg["b_precision"] >= 0.90
     assert seg["row_ari"] > 0.95
+
+    # The old "team" option now uses the same shared pooled descriptor.
+    for source in ("true intervals", "segmentation"):
+        assert r[(source, "team")]["n_clusters"] == r[(source, "pooled")]["n_clusters"]
+        assert r[(source, "team")]["row_ari"] == r[(source, "pooled")]["row_ari"]
