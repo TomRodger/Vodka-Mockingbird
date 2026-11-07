@@ -34,7 +34,7 @@ from scipy.spatial.distance import cdist, squareform
 from .data import OUT_DIR, load_annotation, read_intervals
 from .features import FeatureExtractor, bgr_to_lab, pooled_fft
 from .output import save_montage, save_overlay, write_csv
-from .segment import build_intervals, detect_boundaries
+from .segment import build_intervals, detect_boundaries, section_edge_margins
 
 # ---------------------------------------------------------------- defaults
 # Starting points, NOT tuned values. Tune them on hand-labelled sections (row ARI).
@@ -279,7 +279,8 @@ def run(image, bbox, intervals_csv=None, truth_csv=None, y0=None, y1=None, textu
     else:   # stage 1 (lithology.segment) on the requested rows of the lithology column
         ya, yb = max(y0 or box[1], box[1]), min(y1 or box[3], box[3])
         crop = im.crop((box[0], ya, box[2], yb))
-        intervals = build_intervals(detect_boundaries(crop), ya)
+        margins = section_edge_margins((box[0], ya, box[2], yb), box)
+        intervals = build_intervals(detect_boundaries(crop, edge_margin=margins), ya)
         source = "segmentation"
     ya = min(r["top_y"] for r in intervals)
     yb = max(r["bottom_y"] for r in intervals)

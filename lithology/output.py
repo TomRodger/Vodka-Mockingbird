@@ -54,6 +54,37 @@ def draw_bounding_boxes(image_path, bounding_boxes, output_path="annotated.png",
     print(f"Saved annotated overview to {output_path}")
 
 
+def save_segments(path, col, col_y0, intervals, truth=None, max_h=6000):
+    """The lithology column with segmentation's cuts drawn on it.
+
+    red line + row number = a cut we found; alternate intervals shaded on the right bar
+    green tick on the left = a true boundary (only if truth is given), so a red line with
+    no green tick is a false cut, and a green tick with no red line is a missed boundary.
+    col is the column as an RGB array starting at full-image row col_y0."""
+    H, W = col.shape[:2]
+    s = min(max(1, round(200 / W)), max_h / H)              # zoom narrow columns, shrink tall ones
+    img = Image.fromarray(col).resize((max(1, round(W * s)), max(1, round(H * s))), Image.Resampling.NEAREST)
+    left, bar = 40, 16
+    canvas = Image.new("RGB", (left + img.width + bar + 90, img.height), "white")
+    canvas.paste(img, (left, 0))
+    d = ImageDraw.Draw(canvas)
+    f = font(11)
+    xb = left + img.width + 4
+    for i, r in enumerate(intervals):
+        a, b = (r["top_y"] - col_y0) * s, (r["bottom_y"] - col_y0) * s
+        d.rectangle([xb, a, xb + bar, max(a, b - 1)], fill=(170, 170, 170) if i % 2 else (225, 225, 225))
+    for r in (truth or [])[1:]:
+        y = (r["top_y"] - col_y0) * s
+        if 0 <= y <= img.height:
+            d.rectangle([4, y - 2, left - 4, y + 2], fill=(0, 160, 0))
+    for r in intervals[1:]:
+        y = (r["top_y"] - col_y0) * s
+        d.line([(left - 4, y), (xb + bar, y)], fill=(220, 0, 0), width=2 if s < 1 else max(2, round(s)))
+        d.text((xb + bar + 4, y), str(r["top_y"]), fill=(220, 0, 0), font=f, anchor="lm",
+               stroke_width=2, stroke_fill=(255, 255, 255))
+    canvas.save(path)
+
+
 def save_overlay(path, col, col_y0, merged, k, max_h=6000):
     """Lithology column with a cluster-coloured bar and boundary lines (scaled to fit).
     col is the column as an RGB array starting at full-image row col_y0."""
