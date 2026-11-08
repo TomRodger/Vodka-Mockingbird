@@ -52,6 +52,30 @@ def _alpha(s):
     return sum(c.isalpha() for c in s)
 
 
+# Single words that are complete rock names on their own. Used only to stop the wrapped-label
+# merge from gluing tightly stacked legend ROWS together (Callaway: "ANHYDRITE" / "BENTONITE" /
+# "BRECCIA" became one label with one swatch box, so the orange Anhydrite swatch was lost).
+ROCK_WORDS = {
+    "anhydrite", "bentonite", "breccia", "cement", "chalk", "chert", "claystone", "coal",
+    "conglomerate", "dolomite", "granite", "gypsum", "halite", "igneous", "kaolinite",
+    "limestone", "limonite", "marl", "marlstone", "metamorphic", "pyrite", "salt", "sandstone",
+    "shale", "siderite", "siltstone", "slate", "sylvite", "till", "tuff",
+}
+
+
+def _rock_word(word):
+    return re.sub(r"[^a-z]", "", word.lower()) in ROCK_WORDS
+
+
+def _separate_rows(upper, lower):
+    """True if `lower` is the next legend row, not the second line of `upper`'s name.
+    A wrapped name breaks mid-name ("Silty" / "Sandstone", "Dolomitic" / "limestone"), so its
+    upper line does not END with a complete rock word. Stacked rows each are a whole name:
+    the upper line ends with a rock word AND the lower line starts with one."""
+    up = upper["parts"][-1]["words"] if "parts" in upper else upper["words"]
+    return _rock_word(up[-1]["text"]) and _rock_word(lower["words"][0]["text"])
+
+
 def ocr_labels(img, scale=None, min_conf=25, merge_gap=0.7):
     """Text labels as dicts(text,x,y,w,h,lh) in original pixel coords.
 
@@ -149,6 +173,8 @@ def ocr_labels(img, scale=None, min_conf=25, merge_gap=0.7):
         for m in merged:
             gap = ln["y"] - (m["y"] + m["h"])
             ov = min(m["x"] + m["w"], ln["x"] + ln["w"]) - max(m["x"], ln["x"])
+            if _separate_rows(m, ln):
+                continue
             if -0.1 * med_h <= gap <= merge_gap * med_h and ov > 0.4 * min(m["w"], ln["w"]):
                 target = m
                 break
