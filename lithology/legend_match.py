@@ -167,13 +167,26 @@ def describe_clusters(page, column_box, rows, fe):
 
 
 def best_swatch(d, swatches):
-    """Name for one cluster description, or "unknown". Colour leads; the mix of mark shapes
-    decides among colour-tied swatches (L1 distance between shape fractions, 0..2)."""
+    """Name for one cluster description, or "unknown" (see match_swatch)."""
+    return match_swatch(d, swatches)["name"]
+
+
+def match_swatch(d, swatches):
+    """The best legend swatch for one cluster description, plus the evidence behind the choice
+    (used by lithology.qc to flag doubtful names):
+      name    the swatch's name, or "unknown"
+      colour  Delta-E between the cluster's fill and the chosen swatch's fill
+      shape   L1 distance between their mark-shape mixes (0..2; 2 = patterned vs plain)
+      margin  how much worse the runner-up swatch scored (small = a near tie)
+      prior   True if the "commoner rock" tie-break chose it, not the drawing
+    Colour leads; the mix of mark shapes decides among colour-tied swatches."""
+    out = dict(name="unknown", colour=None, shape=None, margin=None, prior=False)
     if not swatches:
-        return "unknown"
+        return out
     dc = np.array([np.linalg.norm(d["lab"] - s["lab"]) for _, s in swatches])
+    out["colour"] = float(dc.min())
     if dc.min() > COLOUR_MAX:
-        return "unknown"
+        return out
     tied = [i for i in range(len(swatches)) if dc[i] <= dc.min() + COLOUR_TIE]
 
     def dt(i):
@@ -194,7 +207,12 @@ def best_swatch(d, swatches):
     # prior, not a measurement, and the only thing that can decide such a tie.
     best = min(score(i) for i in tied)
     close = [i for i in tied if score(i) <= best + SHAPE_TIE]
-    return swatches[min(close, key=lambda i: (commonness(swatches[i][0]), score(i)))][0]
+    pick = min(close, key=lambda i: (commonness(swatches[i][0]), score(i)))
+    others = [score(j) for j in range(len(swatches)) if j != pick]
+    out.update(name=swatches[pick][0], colour=float(dc[pick]), shape=dt(pick),
+               margin=(min(others) - score(pick)) if others else 2.0,
+               prior=len(close) > 1 and score(pick) > best)
+    return out
 
 
 # Most to least common in mudlogs. Used ONLY to break ties the drawing can't decide.
@@ -208,7 +226,7 @@ def commonness(name):
 
 
 def name_clusters(image, annotation, rows):
-    """Set row["lithology"] for every row. Returns the number of legend swatches found."""
+    """Set row["lithology"] for every row. Returns the names of the legend swatches found."""
     boxes = load_annotation(annotation)
     fe = FeatureExtractor()
     page = Image.open(image)
@@ -217,11 +235,13 @@ def name_clusters(image, annotation, rows):
     except Exception:            # unreadable legend: everything stays "unknown", run continues
         swatches = []
     clusters = describe_clusters(page, boxes["interpreted_lithology_column"], rows, fe)
-    names = {c: best_swatch(d, swatches) for c, d in clusters.items()}
+    matches = {c: match_swatch(d, swatches) for c, d in clusters.items()}
     for r in rows:
         # Blank paper (cluster -1) is never matched: it would get the palest swatch's name.
-        r["lithology"] = "no_data" if r["cluster_id"] < 0 else names.get(r["cluster_id"], "unknown")
-    return len(swatches)
+        m = matches.get(r["cluster_id"]) if r["cluster_id"] >= 0 else None
+        r["lithology"] = "no_data" if r["cluster_id"] < 0 else (m["name"] if m else "unknown")
+        r["match"] = m                     # match evidence (tools/qc_eval); not written to the CSV
+    return [n for n, _ in swatches]
 
 
 def main():
@@ -233,7 +253,7 @@ def main():
     with open(a.merged_csv, newline="") as f:
         rows = [dict(top_y=int(r["top_y"]), bottom_y=int(r["bottom_y"]), cluster_id=int(r["cluster_id"]))
                 for r in csv.DictReader(f)]
-    n = name_clusters(a.image, a.annotation, rows)
+    n = len(name_clusters(a.image, a.annotation, rows))
     print(f"{n} legend swatches")
     seen = {}
     for r in rows:

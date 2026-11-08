@@ -28,6 +28,7 @@ from .data import OUT_DIR, load_annotation
 from .depth.depth_converter import DepthConverter
 from .depth.extract_depths import extract as extract_markers
 from .inclusions import absorb_inclusions
+from . import qc
 from .legend_match import name_clusters
 from .output import save_annotated, write_csv
 
@@ -35,6 +36,8 @@ from .output import save_annotated, write_csv
 # (same values) until they confirm: a scorer ignores a column it doesn't ask for, but
 # fails on one that's missing.
 CSV_KEYS = ["top_y", "bottom_y", "cluster_id", "lithology", "top_depth", "bottom_depth", "base_depth"]
+# <scan>_qc.csv: only the intervals with a flag, and why (lithology.qc). The brief's CSV is unchanged.
+QC_KEYS = ["top_y", "bottom_y", "lithology", "top_depth", "base_depth", "flags"]
 
 
 def add_depths(rows, image, annotation, work_dir, auto_depth=False, depth_candidate=None):
@@ -98,11 +101,21 @@ def run(image, annotation, out_dir=None, auto_depth=False, depth_candidate=None)
     res = cluster_run(image, annotation, out_dir=work_dir, quiet=True)   # segments too
     rows = [dict(top_y=m["top_y"], bottom_y=m["bottom_y"], cluster_id=m["cluster_id"])
             for m in res["merged"]]
-    n_swatches = name_clusters(image, annotation, rows)
+    swatch_names = name_clusters(image, annotation, rows)
+    n_swatches = len(swatch_names)
     rows, n_absorbed = absorb_inclusions(image, load_annotation(annotation)["interpreted_lithology_column"], rows)
     rows, depth_error = add_depths(rows, image, annotation, work_dir, auto_depth, depth_candidate)
 
     write_csv(os.path.join(out_dir, stem + ".csv"), rows, CSV_KEYS)
+    # Quality checks (lithology.qc): which intervals to check, and a light for the document.
+    for r in rows:
+        r["flags"] = "|".join(qc.flags(r))
+    write_csv(os.path.join(out_dir, stem + "_qc.csv"), [r for r in rows if r["flags"]], QC_KEYS)
+    try:
+        missing, merged = qc.legend_coverage(image, annotation, swatch_names)
+    except Exception:
+        missing, merged = [], []
+    light, why = qc.document_light(rows, n_swatches, missing, merged)
     save_annotated(os.path.join(out_dir, stem + "_annotated.png"), image, annotation, rows)
 
     return dict(document=stem, status="ok", error=depth_error,
@@ -110,7 +123,8 @@ def run(image, annotation, out_dir=None, auto_depth=False, depth_candidate=None)
                 n_intervals=len(rows), n_clusters=res["n_clusters"],
                 n_no_data=sum(r["cluster_id"] < 0 for r in rows), n_swatches=n_swatches,
                 n_unknown=sum(r["lithology"] == "unknown" for r in rows), n_absorbed=n_absorbed,
-                n_nan_depths=sum(math.isnan(r[k]) for r in rows for k in ("top_depth", "base_depth")))
+                n_nan_depths=sum(math.isnan(r[k]) for r in rows for k in ("top_depth", "base_depth")),
+                qc_light=light, qc_reason=why, n_flagged=sum(bool(r["flags"]) for r in rows))
 
 
 def main():

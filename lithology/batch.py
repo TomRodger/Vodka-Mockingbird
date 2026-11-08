@@ -23,7 +23,8 @@ from .data import DATASET_ANNOTATIONS, DATASET_IMAGES, OUT_DIR
 from .output import write_csv
 
 LOG_KEYS = ["document", "status", "error", "seconds", "peak_mb", "n_intervals", "n_clusters",
-            "n_no_data", "n_swatches", "n_unknown", "n_absorbed", "n_nan_depths"]
+            "n_no_data", "n_swatches", "n_unknown", "n_absorbed", "n_nan_depths", "n_flagged",
+            "qc_light", "qc_reason"]
 
 
 def run_one(image, annotation, out_dir, timeout):
@@ -52,6 +53,12 @@ def summarise(log):
     errors = Counter(r["error"] for r in log if r.get("error"))
     for msg, n in errors.most_common():
         print(f"  {n:3d} x {msg}")
+    # Which documents to trust as they are (lithology.qc): the review list for a human.
+    lights = Counter(r.get("qc_light") for r in ok)
+    print(f"quality: {lights.get('green', 0)} green, {lights.get('amber', 0)} amber, {lights.get('red', 0)} red")
+    for r in ok:
+        if r.get("qc_light") in ("amber", "red"):
+            print(f"  {r['qc_light']:5s} {r['document'][:45]:45s} {r.get('qc_reason', '')}")
     for key in ("seconds", "peak_mb"):
         v = [r[key] for r in ok if r.get(key) is not None]
         if v:

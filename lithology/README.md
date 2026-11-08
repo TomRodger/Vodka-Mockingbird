@@ -85,6 +85,35 @@ Idea for later (unmeasured): the shape mix ignores where marks sit horizontally,
 what splits one rock into several clusters on colour logs (ardennes: one green shale in 5
 clusters). It may help clustering too. Test it with row ARI on labelled sections first.
 
+# Knowing when it fails (`qc.py`)
+
+Nobody can hand-check thousands of scanned logs, so every run says which outputs to trust.
+`pipeline.py` writes `<scan>_qc.csv` (only the flagged intervals, with the reason) and gives
+each document a light in `batch_log.csv`; `batch.py` ends with the amber/red review list.
+The brief's CSV is unchanged.
+
+- **Per interval:** `unknown` (no swatch close: the pipeline refused to guess),
+  `depth_missing` / `depth_guessed` (past the readable ruler).
+- **Per document:** red if fewer than 5 swatches were read, >20% of rows are unnamed or >5%
+  have no depth; amber if the legend shows a rock that was not extracted, or two rows were
+  glued into one name. The legend is read a second, independent way (plain OCR of the whole
+  box) and its rock words are compared with the swatches, so the reason names the rocks
+  that may be **silently** named as a look-alike (e.g. Callaway: "coal, igneous").
+
+Why this and not per-interval confidence: every wrong NAME found in the labelled sections
+came from a legend entry the extractor missed or merged (Callaway's anhydrite named SHALY
+SILTSTONE; mc761's Shale; dc802's Silty clay-shale). Flags built from the match evidence
+(poor shape fit, poor colour fit, near tie, decided by prior) were tested with thresholds set
+leave-one-section-out on the 7 labels: they marked 6,379 rows, of which 11 were wrong, so they
+were dropped (`python -m tools.qc_eval`).
+
+**Blind spot (not flagged):** of the 931 rows where label and pipeline now disagree, 789 are
+wording ("Sand and Sandstone" in the legend, "Sandstone" in the organisers' truth) and the
+rest are segmentation, not naming: beds of 6-8 rows (under ~1 ft) that are never cut out and
+take their neighbour's name (Callaway: 5 thin anhydrite beds, 50 rows), and boundaries found
+a few rows off (Callaway: one ~20 rows late). Nothing in the output marks these; they show
+only as boundary recall on labelled sections (Callaway 0.85, mc761 0.79).
+
 ## Results across the dataset (final run)
 
 51 of 51 real scans, 0 crashes (the 52nd file is a byte-identical `(1)` duplicate with no
