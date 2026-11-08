@@ -27,12 +27,13 @@ LOG_KEYS = ["document", "status", "error", "seconds", "peak_mb", "n_intervals", 
             "qc_light", "qc_reason"]
 
 
-def run_one(image, annotation, out_dir, timeout):
+def run_one(image, annotation, out_dir, timeout, no_boxes=False):
     stem = os.path.splitext(os.path.basename(image))[0]
     t0 = time.perf_counter()
     try:
-        p = subprocess.run([sys.executable, "-m", "lithology.pipeline", image, annotation,
-                            "--out", out_dir], capture_output=True, text=True, timeout=timeout)
+        cmd = [sys.executable, "-m", "lithology.pipeline", image, annotation, "--out", out_dir]
+        p = subprocess.run(cmd + (["--no-boxes"] if no_boxes else []), capture_output=True, text=True,
+                           timeout=timeout)
     except subprocess.TimeoutExpired:
         return dict(document=stem, status="timeout", error=f"over {timeout} s",
                     seconds=round(time.perf_counter() - t0, 1))
@@ -69,8 +70,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--timeout", type=int, default=1800, help="per document, seconds")
     ap.add_argument("--only", help="run only scans whose name contains this")
+    ap.add_argument("--no-boxes", action="store_true",
+                    help="bonus: ignore the supplied boxes, find the regions instead (writes out/batch_no_boxes)")
     a = ap.parse_args()
-    out_dir = os.path.join(OUT_DIR, "batch")
+    out_dir = os.path.join(OUT_DIR, "batch_no_boxes" if a.no_boxes else "batch")   # never mix the two
     os.makedirs(out_dir, exist_ok=True)
 
     images = sorted(glob.glob(os.path.join(DATASET_IMAGES, "*.tif*")))
@@ -83,7 +86,7 @@ def main():
         if not os.path.exists(annotation):
             r = dict(document=stem, status="crash", error="no annotation JSON")
         else:
-            r = run_one(image, annotation, out_dir, a.timeout)
+            r = run_one(image, annotation, out_dir, a.timeout, a.no_boxes)
         log.append(r)
         print(f"[{i}/{len(images)}] {stem}: {r['status']} {r.get('seconds', '')}s "
               f"{r.get('error') or ''}", flush=True)
