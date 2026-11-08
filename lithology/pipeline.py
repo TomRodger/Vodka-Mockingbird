@@ -20,9 +20,10 @@ import time
 from pathlib import Path
 
 from .cluster import run as cluster_run
-from .data import OUT_DIR
+from .data import OUT_DIR, load_annotation
 from .depth.depth_converter import DepthConverter
 from .depth.extract_depths import extract as extract_markers
+from .inclusions import absorb_inclusions
 from .legend_match import name_clusters
 from .output import save_annotated, write_csv
 
@@ -71,6 +72,7 @@ def run(image, annotation, out_dir=None):
     rows = [dict(top_y=m["top_y"], bottom_y=m["bottom_y"], cluster_id=m["cluster_id"])
             for m in res["merged"]]
     n_swatches = name_clusters(image, annotation, rows)
+    rows, n_absorbed = absorb_inclusions(image, load_annotation(annotation)["interpreted_lithology_column"], rows)
     rows, depth_error = add_depths(rows, image, annotation, work_dir)
 
     write_csv(os.path.join(out_dir, stem + ".csv"), rows, CSV_KEYS)
@@ -80,7 +82,7 @@ def run(image, annotation, out_dir=None):
                 seconds=round(time.perf_counter() - t0, 1), peak_mb=peak_memory_mb(),
                 n_intervals=len(rows), n_clusters=res["n_clusters"],
                 n_no_data=sum(r["cluster_id"] < 0 for r in rows), n_swatches=n_swatches,
-                n_unknown=sum(r["lithology"] == "unknown" for r in rows),
+                n_unknown=sum(r["lithology"] == "unknown" for r in rows), n_absorbed=n_absorbed,
                 n_nan_depths=sum(math.isnan(r[k]) for r in rows for k in ("top_depth", "base_depth")))
 
 

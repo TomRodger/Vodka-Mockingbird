@@ -23,7 +23,7 @@ from .data import DATASET_ANNOTATIONS, DATASET_IMAGES, OUT_DIR
 from .output import write_csv
 
 LOG_KEYS = ["document", "status", "error", "seconds", "peak_mb", "n_intervals", "n_clusters",
-            "n_no_data", "n_swatches", "n_unknown", "n_nan_depths"]
+            "n_no_data", "n_swatches", "n_unknown", "n_absorbed", "n_nan_depths"]
 
 
 def run_one(image, annotation, out_dir, timeout):

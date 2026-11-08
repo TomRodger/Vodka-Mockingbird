@@ -49,6 +49,7 @@ VIEWS_DIR = os.path.join(OUT_DIR, "views")          # rendered pages: generated,
 TARGET_WIDTH = 200     # zoom narrow columns until they are about this wide on screen
 PAGE_HEIGHT = 2000     # max on-screen height of one rendered page
 RULER_W, GAP, NOTE_W = 80, 12, 170
+PAD = 300              # rows of context either side when predicting a section
 
 
 # ---------------------------------------------------------------- lookup
@@ -188,12 +189,18 @@ def predict(img, stem, y0, y1):
     from lithology.cluster import run as cluster_run
     from lithology.legend_match import name_clusters
     ann = f"{ANN_DIR}/{stem}.json"
+    # Run on a padded window, then clip: an interval cut by the section's edge has no rock
+    # above/below to compare with, which the full-document pipeline never sees.
+    box = json.load(open(ann))["bounding_boxes"]["interpreted_lithology_column"]
+    pa, pb = max(box[1], y0 - PAD), min(box[3], y1 + PAD)
     with tempfile.TemporaryDirectory() as tmp:
-        res = cluster_run(img, ann, y0=y0, y1=y1, out_dir=tmp, quiet=True)
-    rows = [dict(top_y=max(m["top_y"], y0), bottom_y=min(m["bottom_y"], y1), cluster_id=m["cluster_id"])
-            for m in res["merged"] if m["bottom_y"] > y0 and m["top_y"] < y1]
+        res = cluster_run(img, ann, y0=pa, y1=pb, out_dir=tmp, quiet=True)
+    rows = [dict(top_y=m["top_y"], bottom_y=m["bottom_y"], cluster_id=m["cluster_id"]) for m in res["merged"]]
     name_clusters(img, ann, rows)
-    return rows
+    from lithology.inclusions import absorb_inclusions
+    rows, _ = absorb_inclusions(img, box, rows)
+    return [dict(r, top_y=max(r["top_y"], y0), bottom_y=min(r["bottom_y"], y1))
+            for r in rows if r["bottom_y"] > y0 and r["top_y"] < y1]
 
 
 def legend_names(im, boxes):
@@ -236,6 +243,19 @@ def read_labels(path):
     if problems:
         sys.exit("Fix these and run check again:\n  " + "\n  ".join(problems))
     return [(ya, yb, na) for (ya, na, _), (yb, _, _) in zip(entries, entries[1:])]
+
+
+def merge_same(intervals):
+    """Join neighbouring intervals with the same name: a line between two intervals of the SAME
+    rock is not a boundary (e.g. kept draft lines at partial-width chunks inside salt).
+    Without this, score counts the pipeline's false cuts there as hits."""
+    out = []
+    for a, b, n in intervals:
+        if out and out[-1][2].strip().lower() == n.strip().lower():
+            out[-1] = (out[-1][0], b, out[-1][2])
+        else:
+            out.append((a, b, n))
+    return out
 
 
 def colour_for(i):
@@ -333,6 +353,10 @@ def cmd_check(args):
                             lines=lines, bands=bands)
 
     print(f"OK: {len(intervals)} intervals, rows {top}-{bot} -> {csv_path}")
+    same = len(intervals) - len(merge_same(intervals))
+    if same:
+        print(f"Note: {same} line(s) start an interval of the same rock as the one above. That's fine "
+              f"(score merges them), but they are not boundaries.")
     print(f"{'lithology':24s} {'intervals':>9s} {'rows':>7s} {'>=72px':>7s} {'>=40px':>7s} {'>=24px':>7s}")
     for n in names:
         hs = [b - a for a, b, m in intervals if m == n]
@@ -348,7 +372,9 @@ def cmd_score(args):
     from lithology.evaluate import row_labels, score
     stem, y0 = parse_label_name(args.labels)
     stem, img, boxes = resolve(stem)
-    truth = [dict(top_y=a, bottom_y=b, lithology=n) for a, b, n in read_labels(args.labels)]
+    raw = read_labels(args.labels)
+    merged = merge_same(raw)
+    truth = [dict(top_y=a, bottom_y=b, lithology=n) for a, b, n in merged]
     top, bot = truth[0]["top_y"], truth[-1]["bottom_y"]
     pred = predict(img, stem, top, bot)
     res = score(truth, pred, len(pred))
@@ -357,7 +383,8 @@ def cmd_score(args):
     p = row_labels(pred, "lithology", top, bot)
     ok = [(a, b) for a, b in zip(t, p) if a is not None and b is not None]
     same = sum(str(a).strip().lower() == str(b).strip().lower() for a, b in ok)
-    print(f"{stem}  rows {top}-{bot}: {len(truth)} labelled intervals, {len(pred)} predicted")
+    extra = f" ({len(raw) - len(merged)} same-rock lines merged)" if len(raw) != len(merged) else ""
+    print(f"{stem}  rows {top}-{bot}: {len(truth)} labelled intervals{extra}, {len(pred)} predicted")
     print(f"  boundaries: recall {res['b_recall']:.2f}  precision {res['b_precision']:.2f}  (within 20 px)")
     print(f"  clusters:   row ARI {res['row_ari']:.3f}")
     print(f"  names:      {same / max(1, len(ok)):.1%} of rows named as labelled")
