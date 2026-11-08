@@ -201,7 +201,7 @@ def refine_rule_edge(path, x0, x1, y, want, win=16):
 # ----------------------------------------------------------------------------
 # main entry
 # ----------------------------------------------------------------------------
-def find_lithology_column(path, factor=4, tie_frac=0.6, return_debug=False):
+def find_by_lines(path, factor=4, tie_frac=0.6, return_debug=False):
     """Locate the interpreted-lithology column. Returns dict(bbox=[x0,y0,x1,y1] in original px,
     confidence, score, alternatives) or None."""
     ink, W, H = load_ink_small(path, factor)
@@ -237,6 +237,172 @@ def find_lithology_column(path, factor=4, tie_frac=0.6, return_debug=False):
                alternatives=others, page=(W, H))
     debug["pick"] = pick
     return (res, debug) if return_debug else res
+
+
+
+# ----------------------------------------------------------------------------
+# mode B: digital / greyscale mudlogs (narrow columns, grey fills, often no thick frame lines)
+# ----------------------------------------------------------------------------
+def load_gray(path, max_w=2400):
+    im = Image.open(str(path)).convert("L")
+    f = max(1, int(round(im.width / max_w)))
+    if f > 1:
+        im = im.reduce(f)
+    return np.asarray(im), f
+
+
+def fill_profile(gray, win=300, white=225):
+    """For every x: fraction of rows that are non-white, taken per window of `win` rows, then the
+    MEDIAN over windows (robust to headers, footers and blank stretches)."""
+    nonwhite = gray < white
+    H = nonwhite.shape[0]
+    wins = np.array([nonwhite[i:i + win].mean(0) for i in range(0, max(1, H - win + 1), win)])
+    return np.median(wins, 0), wins
+
+
+def band_candidates(gray, min_frac=0.015, max_frac=0.065, level=0.4):
+    """Narrow, sharply bounded vertical bands that are filled (pattern / grey) nearly everywhere."""
+    W = gray.shape[1]
+    med, wins = fill_profile(gray)
+    sm = np.convolve(med, np.ones(3) / 3, "same")
+    on = sm >= level
+    xs = np.where(on)[0]
+    if len(xs) == 0:
+        return [], med
+    runs = np.split(xs, np.where(np.diff(xs) > 3)[0] + 1)          # merge gaps of up to 3 px
+    out = []
+    for r in runs:
+        a, b = int(r[0]), int(r[-1]) + 1
+        if not min_frac * W <= b - a <= max_frac * W:
+            continue
+        # pin each edge to a sharp step of the raw profile near the thresholded edge: among the steps
+        # that are nearly as steep as the steepest, take the one closest to that edge (a thin grid
+        # line a few px outside the band is a steep step too, but it is not the band's edge)
+        ga = np.arange(max(1, a - 8), min(W - 1, a + 8))
+        if len(ga):
+            st = med[ga + 1] - med[ga - 1]
+            ok = np.where(st >= 0.8 * st.max())[0]
+            a = int(ga[ok[np.argmin(np.abs(ga[ok] - a))]]) + 1
+        gb = np.arange(max(1, b - 8), min(W - 1, b + 8))
+        if len(gb):
+            st = med[gb - 1] - med[gb + 1]
+            ok = np.where(st >= 0.8 * st.max())[0]
+            b = int(gb[ok[np.argmin(np.abs(gb[ok] - b))]])
+        inside = wins[:, a:b].mean(1)
+        continuity = float(np.mean(inside >= 0.25))                  # fraction of the page it is filled
+        lo, hi = max(0, a - 6), min(W, b + 6)
+        edge = float(sm[a:b].mean() - max(sm[lo:a].mean() if a > lo else 0, sm[b:hi].mean() if hi > b else 0))
+        out.append(dict(x0=a, x1=b, continuity=continuity, edge=edge, level=float(sm[a:b].mean())))
+    return out, med
+
+
+def band_extent(gray, x0, x1, level, win=50):
+    """Vertical extent of a band, deliberately coarse (a few dozen rows on a page tens of thousands
+    of rows tall costs almost nothing): windows where either side border or the fill itself is
+    present, longest run with big gaps tolerated, then snapped to a rule only if one is very close."""
+    H, W = gray.shape
+    def presence(a, b):
+        return (gray[:, max(0, a):min(W, b)] < 200).any(1)
+    sig = presence(x0 - 3, x0 + 3) | presence(x1 - 3, x1 + 3)
+    n = H // win
+    on = sig[:n * win].reshape(n, win).mean(1) >= 0.9
+    ws = np.where(on)[0]
+    if len(ws) == 0:
+        return 0, H
+    runs = np.split(ws, np.where(np.diff(ws) > 6)[0] + 1)          # gaps up to 6 windows (300 rows)
+    r = max(runs, key=len)
+    y0, y1 = int(r[0] * win), int((r[-1] + 1) * win)
+    wide = np.where((gray < 200).mean(1) > 0.8)[0]                  # page-wide dark rules
+    groups = np.split(wide, np.where(np.diff(wide) > 2)[0] + 1) if len(wide) else []
+    fwd = int(0.4 * W)        # the data zone starts a little AFTER the first border activity (the
+    #                           headers above it have rules and borders of their own), and ends a
+    #                           little BEFORE the last one
+    def snap_top(y):
+        near = [g for g in groups if y - 60 <= g[0] <= y + fwd]
+        return int(near[-1][0]) if near else y
+    def snap_bottom(y):
+        near = [g for g in groups if y - fwd <= g[-1] <= y + 60]
+        return int(near[0][-1] + 1) if near else y
+    return snap_top(y0), snap_bottom(y1)
+
+
+def find_by_bands(path, tie_continuity=0.45, return_debug=False):
+    gray, f = load_gray(path)
+    cands, med = band_candidates(gray)
+    good = [c for c in cands if c["continuity"] >= tie_continuity and c["edge"] >= 0.08]
+    debug = dict(mode="bands", candidates=cands, med=med, factor=f)
+    if not good:
+        return (None, debug) if return_debug else None
+    pick = max(good, key=lambda c: c["x0"])          # rightmost: the interpreted column sits last
+    y0, y1 = band_extent(gray, pick["x0"], pick["x1"], pick["level"])
+    res = dict(bbox=[pick["x0"] * f, y0 * f, pick["x1"] * f, y1 * f], score=pick["continuity"],
+               confidence=float(min(1.0, pick["continuity"]) * min(1.0, pick["edge"] / 0.4) * (0.7 if len(good) > 1 else 1.0)),
+               alternatives=[dict(bbox=[c["x0"] * f, 0, c["x1"] * f, gray.shape[0] * f]) for c in good if c is not pick],
+               mode="bands")
+    return (res, debug) if return_debug else res
+
+
+
+# ----------------------------------------------------------------------------
+# mode C: framed narrow track (works when the column is blank / unfilled on most of the page)
+# ----------------------------------------------------------------------------
+def load_ink_vreduced(path, vfactor=8, strip=8000):
+    """Ink in [0,1] with full horizontal resolution (thin lines stay visible) but rows reduced."""
+    im = Image.open(str(path))
+    W, H = im.size
+    parts = []
+    for y in range(0, H, strip):
+        s = im.crop((0, y, W, min(H, y + strip))).convert("L")
+        s = s.resize((W, max(1, s.height // vfactor)), Image.BOX)
+        parts.append(255 - np.asarray(s))
+    return np.vstack(parts).astype(np.float32) / 255.0, W, H
+
+
+def find_by_frames(path, min_frac=0.015, max_frac=0.065, min_thick=1.2, return_debug=False):
+    """Pairs of neighbouring THICK vertical lines (page grids are made of thin ones) that are a
+    plausible column width apart; the rightmost pair is the interpreted-lithology column."""
+    ink, W, H = load_ink_vreduced(path)
+    vf = H / ink.shape[0]
+    tracks, vlines = trace_lines(ink, 1, min_len_frac=0.3)
+    thick = [t for t in tracks if float(np.median(t["hw"])) >= min_thick]
+    pairs = []
+    for a, b in zip(thick[:-1], thick[1:]):
+        gap = float(np.median(b["c"]) - np.median(a["c"]))
+        if min_frac * W <= gap <= max_frac * W:
+            pairs.append((a, b))
+    debug = dict(mode="frames", n_tracks=len(tracks), n_thick=len(thick), n_pairs=len(pairs))
+    if not pairs:
+        return (None, debug) if return_debug else None
+    a, b = pairs[-1]
+    x0 = int((a["c"] - a["hw"]).min()); x1 = int(np.ceil((b["c"] + b["hw"]).max()))
+    gray, f = load_gray(path)
+    y0, y1 = band_extent(gray, x0, x1, 0.3)
+    res = dict(bbox=[x0, y0, x1, y1], score=0.5, confidence=0.4 * (0.7 if len(pairs) > 1 else 1.0),
+               alternatives=[dict(bbox=[int((p["c"] - p["hw"]).min()), 0, int(np.ceil((q["c"] + q["hw"]).max())), H])
+                             for p, q in pairs[:-1]], mode="frames")
+    return (res, debug) if return_debug else res
+
+
+def find_lithology_column(path, return_debug=False, scan_width=3000):
+    """Locate the interpreted-lithology column. Returns dict(bbox=[x0,y0,x1,y1], confidence, mode,
+    alternatives) or None.
+
+    Wide pages (>= scan_width px) are scans with thick frame lines: trace those first. Narrower pages
+    are digital mudlogs: look for a narrow filled band first. Either way the other methods are the
+    fallbacks, ending with a framed-but-blank track."""
+    W = Image.open(str(path)).size[0]
+    def lines(p, rd):
+        out = find_by_lines(p, return_debug=True)
+        if out[0] is not None:
+            out[0]["mode"] = "lines"
+        return out if rd else out[0]
+    methods = [lines, find_by_bands, find_by_frames] if W >= scan_width else [find_by_bands, find_by_frames]
+    out = (None, {})
+    for m in methods:
+        out = m(path, return_debug=True) if m is not lines else lines(path, True)
+        if out[0] is not None:
+            break
+    return out if return_debug else out[0]
 
 
 def iou(a, b):
