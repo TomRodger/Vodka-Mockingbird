@@ -1,0 +1,25 @@
+# Rio_Lavaca_1748_Unit_1_241_MUD
+# Each line starts an interval: <pixel row> <lithology as named in the legend>
+# Delete a line to merge two intervals; add a line to split one.
+# The last line must be '<row> END'. Rows are full-image pixel rows.
+# Blank paper with no rock drawn: no_data
+# DRAFT = THE PIPELINE'S GUESS. Check every row and every name; don't just accept it.
+# Legend names (type them exactly like this):
+#   ANHYDRITE, GYPSUM, SALT, SIDERITE or LIMONITE, LIMESTONE, CHERT, MARLSTONE, CLAYSTONE, SHALE, SHALE GRAY, SHALE COLORED, SILTSTONE, SANDSTONE, CONGLOMERATE, BRECCIA
+18245 SALT
+18259 SALT
+18295 SALT
+18307 SALT
+18355 SALT
+18367 SALT
+18823 SANDSTONE
+18873 SALT
+18903 SANDSTONE
+18944 SANDSTONE
+18951 SANDSTONE
+19036 SANDSTONE
+19045 SANDSTONE
+19073 SALT
+19133 SANDSTONE
+19361 SILTSTONE
+19745 END
