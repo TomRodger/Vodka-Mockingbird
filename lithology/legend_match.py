@@ -88,6 +88,26 @@ def mark_shapes(mask):
     return np.array([counts[k] / total if total else 0.0 for k in SHAPE_CLASSES])
 
 
+# Rock names that appear in these legends (from the legend extractor's earlier version). Used
+# only to fix OCR misreads ("Slity Sandstone" -> "Silty Sandstone"), never to rename a swatch.
+KNOWN_NAMES = "ALTERED ZONE|ANDESITE|ANHYDRITE|BASALT|BENTONITE|BIOTITIZATION|BRECCIA|CALCARENITE|CALCAREOUS TUFF|CALCILUTITE|CARBONATES|CARBONACEOUS MAT|CARBONACEOUS SH|CEMENT CONTAM.|CHALK|CRYSTALLINE TUFF|CHERT - ARGILL|CHERT - GLASSY|CHERT - PORCEL|CHERT - TIGER STRIPE|CHERT - UNDIFF|CLAY|CLAY-MUDSTONE|CLYST-TUFFACEOUS|CHLORITIZATION|COAL|CONGLOMERATE|CONGL. SAND|CONGL. SANDSTONE|COQUINA|DACITE|DIATOMITE|DIORITE|DOLOSTONE|FELSIC SILIC DIKE|FOSSIL|GABBRO|GLASSY TUFF|GRANITE|GRANITE WASH|GRANODIORITE|GYPSUM|HALITE|HORNBL-QTZ-DIO|IGNEOUS (ACIDIC)|IGNEOUS (BASIC)|INTRUSIVES|KAOLINITIC|LIMESTONE|LITHIC TUFF|MARL - DOLO|MARL - CALC|METAMORPHICS|MUDSTONE|OBSIDIAN|PALEOSOL|PHOSPHATE|PORCELANITE|PORCELANEOUS CLYST|PYRITE|PYROCLASTICS|QUARTZ DIORITE|QUARTZ LATITE|QUARTZ MONZONITE|RECRYSTALLIZED CALCITE|RHYOLITE|SALT|SAND|SANDSTONE|SANDSTONE-TUFFACEOUS|SERICITIZATION|SERPENTINE|SHALE|SHALE TUFFACEOUS|SHELL FRAGMENTS|SIDERITE|SILICIFICATION|SILTSTONE|SILTST-TUFFACEOUS|TUFF|VOLCANICLASTICS SEDS|VOLCANICS|DOLOMITE|SILTY SANDSTONE|SAND AND SANDSTONE".split("|")
+SNAP_CUTOFF = 0.85   # similarity needed to snap; legend-specific names ("Calcareous clay-shale")
+                     # are not in the list and must be kept as written, so this stays strict
+
+
+def clean_name(text):
+    """OCR text -> legend name: drop junk symbols at the ends ("Calcareous sandstone™",
+    "Calcareous clay-shale —"), then snap to a known rock name only if it is a near-certain
+    misread. Otherwise the legend's own wording is kept: the brief asks for the legend's name."""
+    import difflib
+    t = re.sub(r"\s+", " ", re.sub(r"^[^A-Za-z]+|[^A-Za-z)]+$", "", text)).strip()
+    if not t:
+        return ""
+    table = {k.lower(): k for k in KNOWN_NAMES}
+    hit = difflib.get_close_matches(t.lower(), list(table), n=1, cutoff=SNAP_CUTOFF)
+    return table[hit[0]].title() if hit and hit[0] != t.lower() else t
+
+
 def tighten(img, x, y, w, h):
     """Shrink a swatch box to the largest blob of ink inside it. The extractor's boxes can be
     offset or padded with paper (ardennes: Siltstone's box reaches into Limestone, Dolomite's
@@ -110,6 +130,7 @@ def legend_swatches(page, legend_box, fe):
     pairs, _ = lx.detect(img, labels)
     out = []
     for box, name in pairs:
+        name = clean_name(name or "")
         x, y, w, h = tighten(img, *box)
         if name and not NOT_ROCK.search(name) and w > 2 * TRIM and h > 2 * TRIM:
             out.append((name, describe_patch(img[y:y + h, x:x + w], fe)))
