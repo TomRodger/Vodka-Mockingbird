@@ -19,7 +19,8 @@ Per document (green / amber / red, in the pipeline summary and batch_log.csv):
                   Shale won by luck).
   red             fewer than 5 swatches read, >20% of rows unnamed, or >5% without depth
   amber           any rock missing from the extracted legend, a swatch name holding two rock
-                  names, >2% unnamed, or any row without depth
+                  names, >2% unnamed, any row without depth, or one rock for the whole column
+                  (every such case found, dev log08/log09 and test Nichols 1, had missed boundaries)
   The red/amber cut-offs are fixed in advance, not tuned.
 
 What was tested and dropped (python -m tools.qc_eval reproduces it): per-interval flags from
@@ -107,6 +108,13 @@ def document_light(rows, n_swatches, missing=(), merged=()):
     if no_depth > 0.05:
         return "red", f"{no_depth:.0%} of rows without depth"
     why = []
+    # One rock for the whole column: on every document where this happened (dev log08, log09;
+    # test Nichols 1) the column visibly alternates between beds (black-and-white dashes vs
+    # dots, no colour difference) and segmentation missed every boundary. No document that
+    # was correct came out as a single rock, so this is a reliable "check me".
+    rock_ids = {r.get("cluster_id") for r in rock if r.get("cluster_id", -1) >= 0}
+    if len(rock_ids) == 1 and len(rock) >= 1:
+        why.append("only one rock found in the whole column: boundaries probably missed")
     if missing:
         why.append("legend rocks not extracted (may be named as a look-alike): " + ", ".join(missing))
     if merged:

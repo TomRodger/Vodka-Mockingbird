@@ -72,18 +72,29 @@ def main():
     ap.add_argument("--only", help="run only scans whose name contains this")
     ap.add_argument("--no-boxes", action="store_true",
                     help="bonus: ignore the supplied boxes, find the regions instead (writes out/batch_no_boxes)")
+    ap.add_argument("--images", default=DATASET_IMAGES, help="folder of scans (default: the dev dataset)")
+    ap.add_argument("--annotations", help="folder of annotation JSONs, matched to scans by name "
+                                          "(default: the dev dataset's, or --images/../bbox_annotation)")
+    ap.add_argument("--out", help="output folder (default: out/batch, out/batch_no_boxes, or "
+                                  "out/batch_<set name> for another image folder)")
     a = ap.parse_args()
-    out_dir = os.path.join(OUT_DIR, "batch_no_boxes" if a.no_boxes else "batch")   # never mix the two
+    images_dir = os.path.abspath(a.images)
+    dev = images_dir == os.path.abspath(DATASET_IMAGES)
+    ann_dir = a.annotations or (DATASET_ANNOTATIONS if dev else os.path.join(os.path.dirname(images_dir), "bbox_annotation"))
+    tag = "" if dev else "_" + os.path.basename(os.path.dirname(images_dir) if os.path.basename(images_dir) == "images" else images_dir)
+    out_dir = a.out or os.path.join(OUT_DIR, ("batch_no_boxes" if a.no_boxes else "batch") + tag)   # never mix runs
     os.makedirs(out_dir, exist_ok=True)
+    print(f"scans: {images_dir}\nboxes: {'found by the bonus finders' if a.no_boxes else ann_dir}\noutput: {out_dir}\n", flush=True)
 
-    images = sorted(glob.glob(os.path.join(DATASET_IMAGES, "*.tif*")))
+    images = sorted(p for p in glob.glob(os.path.join(images_dir, "*"))
+                    if p.lower().endswith((".tif", ".tiff", ".png", ".jpg", ".jpeg")))
     if a.only:
         images = [p for p in images if a.only in os.path.basename(p)]
     log = []
     for i, image in enumerate(images, 1):
         stem = os.path.splitext(os.path.basename(image))[0]
-        annotation = os.path.join(DATASET_ANNOTATIONS, stem + ".json")
-        if not os.path.exists(annotation):
+        annotation = os.path.join(ann_dir, stem + ".json")
+        if not os.path.exists(annotation) and not a.no_boxes:
             r = dict(document=stem, status="crash", error="no annotation JSON")
         else:
             r = run_one(image, annotation, out_dir, a.timeout, a.no_boxes)
