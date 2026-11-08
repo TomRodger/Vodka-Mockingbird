@@ -1,0 +1,19 @@
+# 60811407570000_bp_gc743_15607_dc802_st00bp00_mudlog_5md_6900-17643
+# Each line starts an interval: <pixel row> <lithology as named in the legend>
+# Delete a line to merge two intervals; add a line to split one.
+# The last line must be '<row> END'. Rows are full-image pixel rows.
+# Blank paper with no rock drawn: no_data
+# DRAFT = THE PIPELINE'S GUESS. Check every row and every name; don't just accept it.
+# Legend names (type them exactly like this):
+#   Clay Shale, Marl, Bituminous limestone, Medium sandstone, Medium sand, Silt, Dolomite, Sandy and calcareous dolomite, Calcareous clay-shale, Limestone, Oolic limestone, Fine sandstone, Calcareous sandstone, Siltstone, Fine Dolomite, Argil and sandy dolomite, Basalt
+71282 Siltstone
+71336 Clay Shale
+71607 Siltstone
+71674 Clay Shale
+71836 Siltstone
+71891 Clay Shale
+72256 Siltstone
+72310 Clay Shale
+72623 Siltstone
+72718 Clay Shale
+72782 END

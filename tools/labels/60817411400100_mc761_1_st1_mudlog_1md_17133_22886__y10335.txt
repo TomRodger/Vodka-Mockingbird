@@ -1,0 +1,43 @@
+# 60817411400100_mc761_1_st1_mudlog_1md_17133_22886
+# Each line starts an interval: <pixel row> <lithology as named in the legend>
+# Delete a line to merge two intervals; add a line to split one.
+# The last line must be '<row> END'. Rows are full-image pixel rows.
+# Blank paper with no rock drawn: no_data
+# DRAFT = THE PIPELINE'S GUESS. Check every row and every name; don't just accept it.
+# Legend names (type them exactly like this):
+# Not Available, Anhydrite, Sandstone, Marlstone, Siltstone, Salt, Shale, Breccia, Conglomerate, Claystone, Limestone, Dolomite
+10335 Siltstone
+10345 Shale
+10367 Siltstone
+10373 Shale
+10441 Siltstone
+10447 Shale
+10467 Siltstone
+10471 Shale
+10489 Siltstone
+10493 Shale
+10513 Siltstone
+10525 Shale
+10533 Sandstone
+10551 Siltstone
+10568 Sandstone
+10575 Slate
+10591 Sandstone
+10599 Slate
+10603 Siltstone
+10615 Sandstone
+10633 Slate
+10649 Siltstone
+10656 Sandstone
+10695 Slate
+10731 Sandstone
+10737 Slate
+10803 Sandstone
+10813 Slate
+10877 Sandstone
+10885 Slate
+10897 Sandstone
+10925 Slate
+10945 Sandstone
+10949 Slate
+11135 END

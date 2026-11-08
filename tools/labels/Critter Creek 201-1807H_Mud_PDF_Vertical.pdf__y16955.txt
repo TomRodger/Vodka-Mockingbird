@@ -1,0 +1,23 @@
+# Critter Creek 201-1807H_Mud_PDF_Vertical.pdf
+# Each line starts an interval: <pixel row> <lithology as named in the legend>
+# Delete a line to merge two intervals; add a line to split one.
+# The last line must be '<row> END'. Rows are full-image pixel rows.
+# Blank paper with no rock drawn: no_data
+# DRAFT = THE PIPELINE'S GUESS. Check every row and every name; don't just accept it.
+# Legend names (type them exactly like this):
+#   SHALE GRAY, SHALE COLORED, SILTSTONE, SANDSTONE, CONGLOMERATE, BRECCIA
+16955 SANDSTONE
+17010 SILTSTONE
+17188 SANDSTONE
+17468 SILTSTONE
+17541 SANDSTONE
+17663 SILTSTONE
+17818 SANDSTONE
+17903 SILTSTONE
+18021 SANDSTONE
+18113 SILTSTONE
+18238 SANDSTONE
+18345 SILTSTONE
+18411 SANDSTONE
+18450 SILTSTONE
+18455 END

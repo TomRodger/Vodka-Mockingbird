@@ -1,0 +1,29 @@
+# 60811406050100_ardennes_ocs-g31765 001 st00 bp01__master log_5640-36552_5 in_md
+# Each line starts an interval: <pixel row> <lithology as named in the legend>
+# Delete a line to merge two intervals; add a line to split one.
+# The last line must be '<row> END'. Rows are full-image pixel rows.
+# Blank paper with no rock drawn: no_data
+# DRAFT = THE PIPELINE'S GUESS. Check every row and every name; don't just accept it.
+# Legend names (type them exactly like this):
+#   Siltstone, Limestone, Sandstone, Dolomite, Sandy Clay-Shale, Halite, Marl, Chert, Clay-shale, Dolomitic limestone, Syivite, Shale, Chalk, Granite
+274143 Sandstone
+274181 Shale
+274235 Sandstone
+274310 Shale
+274398 Sandstone
+274431 Shale
+274508 Sandstone
+274620 Shale
+274686 Sandstone
+274770 Shale
+274929 Sandstone
+275064 Shale
+275115 Sandstone
+275156 Shale
+275202 Sandstone
+275272 Shale
+275301 Sandstone
+275359 Shale
+275442 Sandstone
+275528 Shale
+275643 END
