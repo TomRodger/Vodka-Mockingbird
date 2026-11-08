@@ -32,10 +32,20 @@ from . import qc
 from .legend_match import name_clusters
 from .output import save_annotated, write_csv
 
-# The organisers' example.csv says bottom_depth; the slides say base_depth. Write both
-# (same values) until they confirm: a scorer ignores a column it doesn't ask for, but
-# fails on one that's missing.
-CSV_KEYS = ["top_y", "bottom_y", "cluster_id", "lithology", "top_depth", "bottom_depth", "base_depth"]
+# The six columns of the slides' "Expected Outputs", in that order. example.csv calls the
+# base "bottom_depth", so that is appended with the same values: a scorer reads columns by
+# name and ignores extras, but fails on a missing one.
+CSV_KEYS = ["top_y", "bottom_y", "cluster_id", "lithology", "top_depth", "base_depth", "bottom_depth"]
+DEPTH_KEYS = ("top_depth", "bottom_depth", "base_depth")
+
+
+def csv_row(r):
+    """Depths to 0.1 ft (the ruler is read to about that), unreadable depths left blank."""
+    out = dict(r)
+    for k in DEPTH_KEYS:
+        v = out.get(k)
+        out[k] = "" if v is None or (isinstance(v, float) and math.isnan(v)) else round(float(v), 1)
+    return out
 # <scan>_qc.csv: only the intervals with a flag, and why (lithology.qc). The brief's CSV is unchanged.
 QC_KEYS = ["top_y", "bottom_y", "lithology", "top_depth", "base_depth", "flags"]
 
@@ -110,7 +120,9 @@ def run(image, annotation, out_dir=None, auto_depth=False, depth_candidate=None,
     rows, n_absorbed = absorb_inclusions(image, load_annotation(annotation)["interpreted_lithology_column"], rows)
     rows, depth_error = add_depths(rows, image, annotation, work_dir, auto_depth, depth_candidate)
 
-    write_csv(os.path.join(out_dir, stem + ".csv"), rows, CSV_KEYS)
+    # Like example.csv: rock intervals only (blank paper is left out; it stays on the image).
+    write_csv(os.path.join(out_dir, stem + ".csv"),
+              [csv_row(r) for r in rows if r.get("lithology") != "no_data"], CSV_KEYS)
     # Quality checks (lithology.qc): which intervals to check, and a light for the document.
     for r in rows:
         r["flags"] = "|".join(qc.flags(r))

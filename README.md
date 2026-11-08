@@ -27,7 +27,7 @@ Per document, in `out/pipeline/` (or `out/batch/`, git-ignored):
 
 | file | what it is |
 |---|---|
-| `<scan>.csv` | the brief's output: `top_y, bottom_y, cluster_id, lithology, top_depth, bottom_depth, base_depth` |
+| `<scan>.csv` | the brief's output: `top_y, bottom_y, cluster_id, lithology, top_depth, base_depth` (the slides' order), plus `bottom_depth` (example.csv's name, same values); one row per rock interval, blank paper left out, unreadable depths blank |
 | `<scan>_annotated.png` | the original scan with boundaries, names and depths drawn on (tall logs: `_p01`, `_p02`, ... pages) |
 | `<scan>_qc.csv` | only the intervals worth checking, with the reason |
 

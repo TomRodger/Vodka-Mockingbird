@@ -22,7 +22,7 @@ image** (`top_y`, `bottom_y`); nothing resizes coordinates. Run everything from 
 | `evaluate.py` | scoring against truth; the example check | `python -m lithology.evaluate` |
 
 `pipeline.py` writes `<scan>.csv` (`top_y, bottom_y, cluster_id, lithology, top_depth,
-bottom_depth, base_depth`) and `<scan>_annotated.png`, drawn on the original scan (tall logs
+base_depth, bottom_depth`) and `<scan>_annotated.png`, drawn on the original scan (tall logs
 split into `_p01`, `_p02`, ... pages at full resolution). Legend matching needs Tesseract
 (`brew install tesseract`, `pip install pytesseract`); without it every rock is `unknown`.
 
