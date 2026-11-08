@@ -134,34 +134,47 @@ def _fmt_depth(v):
     return "?" if v is None or v != v else f"{v:.1f}"      # v != v: NaN
 
 
-def save_annotated(path, image, annotation, rows, max_h=30000, col_w=120):
-    """The brief's annotated image: the original lithology column with each interval's
-    boundary line, depth range, lithology name and cluster id beside it.
+def save_annotated(path, image, annotation, rows, page_rows=20000):
+    """The brief's annotated image, drawn on the ORIGINAL scan (full page width): each
+    interval's boundary line across the lithology column, a colour bar beside the column, and
+    "name [cluster]  top-base ft" next to it on a white box so it stays readable over the log.
 
-    Tall columns are scaled down to max_h pixels; an interval's text is drawn only if it is
-    tall enough to fit after scaling (its boundary line and colour bar are always drawn).
-    The bar colour is per lithology NAME, so one rock split into several clusters still
-    reads as one colour."""
+    Full resolution, never scaled: a log taller than page_rows is split into numbered pages
+    (<name>_p01.png, _p02.png, ...) covering the rows that have intervals. The bar colour is
+    per lithology NAME, so one rock split into several clusters still reads as one colour.
+    Returns the list of files written."""
     import json
     with open(annotation) as f:
-        x0, y0, x1, y1 = json.load(f)["bounding_boxes"]["interpreted_lithology_column"]
+        x0, _, x1, _ = json.load(f)["bounding_boxes"]["interpreted_lithology_column"]
     ya = min(r["top_y"] for r in rows)
     yb = max(r["bottom_y"] for r in rows)
-    col = Image.open(image).crop((x0, ya, x1, yb)).convert("RGB")
-    s = min(1.0, max_h / col.height)
-    col = col.resize((col_w, max(1, round(col.height * s))), Image.Resampling.NEAREST)
-
+    page = Image.open(image)
     names = sorted({r["lithology"] for r in rows if r["lithology"] not in ("unknown", "no_data")})
     colours = dict(zip(names, palette(len(names))), unknown=(150, 150, 150), no_data=(230, 230, 230))
-    canvas = Image.new("RGB", (col_w + 420, col.height), "white")
-    canvas.paste(col, (0, 0))
-    d, f = ImageDraw.Draw(canvas), font(13)
-    for r in rows:
-        a, b = (r["top_y"] - ya) * s, (r["bottom_y"] - ya) * s
-        d.rectangle([col_w + 4, a, col_w + 18, max(a, b - 1)], fill=colours[r["lithology"]])
-        d.line([(0, a), (col_w + 24, a)], fill=(220, 0, 0), width=1)
-        if b - a >= 16:
-            c = "" if r["cluster_id"] < 0 else f"  [c{r['cluster_id']}]"
-            text = f"{r['lithology']}{c}  {_fmt_depth(r['top_depth'])}-{_fmt_depth(r['base_depth'])} ft"
-            d.text((col_w + 26, (a + b) / 2), text, fill=(0, 0, 0), font=f, anchor="lm")
-    canvas.save(path)
+    size = max(16, page.width // 160)          # ~30 px on a 4800-px-wide scan: readable at fit-to-screen
+    f = font(size)
+    starts = list(range(ya, yb, page_rows))
+    written = []
+    for n, a in enumerate(starts, 1):
+        b = min(a + page_rows, yb)
+        im = page.crop((0, a, page.width, b)).convert("RGB")
+        d = ImageDraw.Draw(im)
+        for r in rows:
+            if r["bottom_y"] <= a or r["top_y"] >= b:
+                continue
+            t, u = max(r["top_y"], a) - a, min(r["bottom_y"], b) - a
+            bar = max(12, size // 2)
+            d.rectangle([x1 + 2, t, x1 + 2 + bar, max(t, u - 1)], fill=colours[r["lithology"]])
+            if r["top_y"] >= a:
+                d.line([(x0, t), (x1 + 2 + bar, t)], fill=(220, 0, 0), width=max(2, size // 10))
+            if u - t >= size + 4:
+                c = "" if r["cluster_id"] < 0 else f"  [c{r['cluster_id']}]"
+                text = f"{r['lithology']}{c}  {_fmt_depth(r['top_depth'])}-{_fmt_depth(r['base_depth'])} ft"
+                tx = x1 + 2 + bar + size // 2
+                box = d.textbbox((tx, (t + u) / 2), text, font=f, anchor="lm")
+                d.rectangle([box[0] - 3, box[1] - 2, box[2] + 3, box[3] + 2], fill="white", outline=(120, 120, 120))
+                d.text((tx, (t + u) / 2), text, fill=(0, 0, 0), font=f, anchor="lm")
+        out = path if len(starts) == 1 else path.replace(".png", f"_p{n:02d}.png")
+        im.save(out)
+        written.append(out)
+    return written
