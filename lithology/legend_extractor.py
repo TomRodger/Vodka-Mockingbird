@@ -18,6 +18,8 @@ Two strategies, chosen automatically:
 
 Usage:
   python legend_extractor.py legend.png out_dir [--layout auto|left|boxes] [--no-ocr] [--keep-unnamed]
+  python legend_extractor.py full_log.tif out_dir [--annotation legend_box.json]
+      (no annotation + a full page -> legend_finder.py locates the legend first)
 
 Outputs in out_dir: one PNG per swatch, _index.csv, _debug.png (overlay).
 """
@@ -481,6 +483,99 @@ def detect(img, labels, layout="auto"):
     return strategy_boxes(img, labels), f"boxes (ink beside {ev:.0%} of labels)"
 
 
+# ----------------------------------------------------------------------------
+# Locating the legend inside a full log page
+# ----------------------------------------------------------------------------
+def _read_image(path):
+    """cv2 first; PIL fallback for big / unusual TIFFs (first page)."""
+    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if img is not None:
+        return img
+    try:
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None
+        im = Image.open(str(path)); im.seek(0)
+        return cv2.cvtColor(np.array(im.convert("RGB")), cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
+
+
+def load_annotation_bbox(path):
+    """Legend box (x, y, w, h) in pixels from an annotation JSON file.
+
+    Accepted: [x, y, w, h]; {"x","y","w","h"}; {"x1","y1","x2","y2"}; {"xmin","ymin","xmax","ymax"};
+    {"left","top","right","bottom"}; any of these nested under "bbox"/"box"/"legend"/"region";
+    or a list of such objects (the one mentioning "legend" wins, else the first).
+    """
+    import json
+    d = json.load(open(path, encoding="utf-8"))
+
+    def one(o):
+        if isinstance(o, (list, tuple)) and len(o) == 4 and all(isinstance(v, (int, float)) for v in o):
+            return tuple(float(v) for v in o)
+        if isinstance(o, dict):
+            for k in ("bbox", "box", "legend", "region"):
+                if k in o:
+                    r = one(o[k])
+                    if r:
+                        return r
+            for ks, kind in ((("x", "y", "w", "h"), "xywh"), (("x", "y", "width", "height"), "xywh"),
+                             (("x1", "y1", "x2", "y2"), "xyxy"), (("xmin", "ymin", "xmax", "ymax"), "xyxy"),
+                             (("left", "top", "right", "bottom"), "xyxy")):
+                if all(k in o for k in ks):
+                    v = [float(o[k]) for k in ks]
+                    return tuple(v) if kind == "xywh" else (v[0], v[1], v[2] - v[0], v[3] - v[1])
+        return None
+
+    if isinstance(d, list) and d and isinstance(d[0], dict):
+        d = sorted(d, key=lambda o: 0 if "legend" in json.dumps(o).lower() else 1)[0]
+    box = one(d)
+    if not box or box[2] <= 0 or box[3] <= 0:
+        sys.exit(f"cannot read a legend box from {path}; expected [x,y,w,h] or {{x,y,w,h}} / {{x1,y1,x2,y2}}")
+    return tuple(int(round(v)) for v in box)
+
+
+def looks_like_full_page(img):
+    """A whole log page is big and tall; a legend crop is small. (--find / --no-find override this.)"""
+    H, W = img.shape[:2]
+    return H * W >= 8_000_000 or H >= 1.6 * W
+
+
+def locate_legend(img, a, out):
+    """Return (legend_image, description).
+
+    annotation given  -> crop that box.
+    no annotation     -> legend_finder (CV only) if the image looks like a full page.
+    The crop is written to out/_legend_crop.png and read back, so what is cut is exactly the saved image.
+    """
+    H, W = img.shape[:2]
+    if a.annotation:
+        x, y, w, h = load_annotation_bbox(a.annotation)
+        x0, y0, x1, y1 = max(x, 0), max(y, 0), min(x + w, W), min(y + h, H)
+        if x1 <= x0 or y1 <= y0:
+            sys.exit(f"annotation box {x, y, w, h} is outside the {W}x{H} image")
+        crop, how = img[y0:y1, x0:x1], f"legend from annotation: x={x0} y={y0} w={x1 - x0} h={y1 - y0}"
+    else:
+        if not (a.find or (not a.no_find and looks_like_full_page(img))):
+            return img, "no annotation; image looks like a cropped legend already (use --find to search it)"
+        try:
+            import legend_finder
+        except ImportError:
+            sys.exit("legend_finder.py must be in the same folder as legend_extractor.py")
+        res = legend_finder.find_legend(img)
+        if res is None:
+            sys.exit("legend_finder could not find a legend near the top of the page; "
+                     "pass --annotation <file> (or crop the legend yourself)")
+        x, y, w, h = res["bbox"]
+        crop = res["crop"]
+        how = (f"legend found by legend_finder: x={x} y={y} w={w} h={h} "
+               f"({res['n_swatches']} swatches, confidence {res['confidence']:.2f})")
+    path = out / "_legend_crop.png"
+    cv2.imwrite(str(path), crop)
+    back = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    return (back if back is not None else crop), how
+
+
 def main():
     global OCR_ENABLED
     ap = argparse.ArgumentParser()
@@ -490,19 +585,25 @@ def main():
     ap.add_argument("--keep-unnamed", action="store_true",
                     help="save swatches without a label as swatch_NNN instead of skipping them (debugging)")
     ap.add_argument("--pad", type=int, default=0)
+    ap.add_argument("--annotation", help="JSON file with the legend box; if omitted, legend_finder looks for it")
+    ap.add_argument("--find", action="store_true", help="always run legend_finder (even on a small image)")
+    ap.add_argument("--no-find", action="store_true", help="never run legend_finder; use the image as the legend")
     a = ap.parse_args()
     OCR_ENABLED = not a.no_ocr
-
-    img = cv2.imread(a.image)
-    if img is None:
-        sys.exit(f"cannot read {a.image}")
-    labels = ocr_labels(img) if (pytesseract and not a.no_ocr) else []
-
-    pairs, used = detect(img, labels, a.layout)
 
     out = Path(a.out_dir); out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("*.png"):
         old.unlink()
+
+    img = _read_image(a.image)
+    if img is None:
+        sys.exit(f"cannot read {a.image}")
+    img, how = locate_legend(img, a, out)
+    print(how)
+    labels = ocr_labels(img) if (pytesseract and not a.no_ocr) else []
+
+    pairs, used = detect(img, labels, a.layout)
+
     dbg = img.copy(); rows = []; seen = {}
     H, W = img.shape[:2]
     # unnamed swatches are not patterns (empty frames, stray boxes): don't save them
