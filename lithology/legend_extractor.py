@@ -12,10 +12,12 @@ Two strategies, chosen automatically:
 
   B) "component" (framed swatches, label BELOW) -- e.g. small boxed legends.
      Text is painted out, remaining ink is grouped by connected components,
-     and each box is paired with the nearest label.
+     and each box is paired with the nearest label. Labels are also re-read
+     directly from the strip under each box, so multi-line labels and labels
+     the global OCR pass missed are still recovered.
 
 Usage:
-  python legend_cutter.py legend.png out_dir [--layout auto|left|boxes] [--no-ocr]
+  python legend_extractor.py legend.png out_dir [--layout auto|left|boxes] [--no-ocr] [--keep-unnamed]
 
 Outputs in out_dir: one PNG per swatch, _index.csv, _debug.png (overlay).
 """
@@ -38,33 +40,53 @@ try:
 except ImportError:
     pytesseract = None
 
+OCR_ENABLED = True   # set False by --no-ocr; also disables the per-box label re-read
+
 
 # ----------------------------------------------------------------------------
 # OCR
 # ----------------------------------------------------------------------------
-def ocr_labels(img, scale=None, min_conf=40):
-    """Text *lines* as dicts(text,x,y,w,h) in original pixel coords."""
+def _alpha(s):
+    return sum(c.isalpha() for c in s)
+
+
+def ocr_labels(img, scale=None, min_conf=25, merge_gap=0.7):
+    """Text labels as dicts(text,x,y,w,h,lh) in original pixel coords.
+
+    Wrapped (multi-line) labels are merged into ONE label: lines that sit
+    directly under each other (gap < merge_gap * text height) and overlap
+    horizontally. `lh` is the height of a single text line.
+    """
     H, W = img.shape[:2]
     if scale is None:   # small images are upscaled 3x; big ones less (cap ~3000 px)
         scale = 3.0 if max(H, W) <= 1500 else max(1.0, 3000.0 / max(H, W))
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    big = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    d = pytesseract.image_to_data(big, config="--psm 11", output_type=pytesseract.Output.DICT)
+    # Tesseract's sparse-text pass is sensitive to scale: a label found at 3x can vanish at 2x or 4x
+    # (and vice versa). Run a few scales and take the union of the words.
     words = []
-    for i, t in enumerate(d["text"]):
-        t = t.strip()
-        if not t or float(d["conf"][i]) < min_conf:
-            continue
-        x, y, w, h = (d[k][i] / scale for k in ("left", "top", "width", "height"))
-        words.append(dict(text=t, x=x, y=y, w=w, h=h, cy=y + h / 2, conf=float(d["conf"][i])))
+    for si, sc in enumerate((scale, 0.67 * scale, 1.33 * scale)):
+        big = cv2.resize(gray, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+        d = pytesseract.image_to_data(big, config="--psm 11", output_type=pytesseract.Output.DICT)
+        for i, t in enumerate(d["text"]):
+            t = t.strip()
+            # extra scales only ADD confident words (they also read hatch patterns as junk text)
+            if not t or float(d["conf"][i]) < (min_conf if si == 0 else 80):
+                continue
+            x, y, w, h = (d[k][i] / sc for k in ("left", "top", "width", "height"))
+            cx, cy = x + w / 2, y + h / 2
+            if si and any(min(x + w, o["x"] + o["w"]) > max(x, o["x"]) and
+                          min(y + h, o["y"] + o["h"]) > max(y, o["y"]) for o in words):
+                continue                                   # already read at the first scale
+            words.append(dict(text=t, x=x, y=y, w=w, h=h, cy=cy, conf=float(d["conf"][i])))
     if not words:
         return []
 
     # reference text height from words that look like real words, then discard
-    # tokens whose height is far off it (junk read from hatch patterns is tall or tiny)
-    real = [w["h"] for w in words if w["conf"] >= 60 and sum(c.isalpha() for c in w["text"]) >= 4]
+    # tokens whose height is far off it (junk read from hatch patterns is tall or tiny).
+    # Bounds are deliberately loose: a label sitting next to a pattern gets a distorted box.
+    real = [w["h"] for w in words if w["conf"] >= 50 and _alpha(w["text"]) >= 4]
     ref = float(np.median(real if len(real) >= 3 else [w["h"] for w in words]))
-    words = [w for w in words if w["text"] in ("-", "–", "—") or 0.5 * ref <= w["h"] <= 1.8 * ref]
+    words = [w for w in words if w["text"] in ("-", "–", "—") or 0.4 * ref <= w["h"] <= 2.2 * ref]
     if not words:
         return []
     med_h = ref
@@ -80,7 +102,7 @@ def ocr_labels(img, scale=None, min_conf=40):
     rows.append(cur)
 
     # 2) within a row, chain words left->right while the gap is small
-    lines = []
+    chains = []
     for row in rows:
         row.sort(key=lambda w: w["x"])
         chain = [row[0]]
@@ -89,28 +111,151 @@ def ocr_labels(img, scale=None, min_conf=40):
             if wd["x"] - (prev["x"] + prev["w"]) < 0.9 * med_h:
                 chain.append(wd)
             else:
-                lines.append(chain); chain = [wd]
-        lines.append(chain)
+                chains.append(chain); chain = [wd]
+        chains.append(chain)
 
-    # 3) a real label contains at least one real word (>=4 letters)
-    out = []
-    for ch in lines:
-        if not any(sum(c.isalpha() for c in w["text"]) >= 4 for w in ch):
-            continue
-        while len(ch) > 1 and sum(c.isalpha() for c in ch[0]["text"]) < 4 and ch[0]["text"] not in ("-",):
+    # 3) chain -> line box (trim short junk tokens off the left end)
+    lines = []
+    for ch in chains:
+        while len(ch) > 1 and _alpha(ch[0]["text"]) < 4 and ch[0]["text"] != "-":
             if len(ch[0]["text"]) <= 2 and ch[0]["x"] + ch[0]["w"] < ch[1]["x"] - 0.5 * med_h:
                 ch = ch[1:]
             else:
                 break
         x1 = min(w["x"] for w in ch); y1 = min(w["y"] for w in ch)
         x2 = max(w["x"] + w["w"] for w in ch); y2 = max(w["y"] + w["h"] for w in ch)
-        out.append(dict(text=" ".join(w["text"] for w in ch), x=x1, y=y1, w=x2 - x1, h=y2 - y1))
+        lines.append(dict(words=ch, x=x1, y=y1, w=x2 - x1, h=y2 - y1))
+
+    # short candidates (1-2 letters/digits, one confident word): only accepted at the end,
+    # and only if they line up with the real labels (hatch junk won't)
+    weak = []
+    for ln in lines:
+        if len(ln["words"]) == 1:
+            t = ln["words"][0]["text"]
+            if t.isalnum() and len(t) <= 2 and ln["words"][0]["conf"] >= 60:
+                weak.append(ln)
+
+    # drop pure-junk lines (hatch/dash patterns misread as symbols). With the lower min_conf
+    # they would otherwise be glued onto the real label below them by the merge step.
+    lines = [ln for ln in lines if sum(_alpha(w["text"]) for w in ln["words"]) >= 2]
+
+    # 4) merge wrapped labels ("Silty" / "Sandstone") BEFORE judging whether a label is real
+    lines.sort(key=lambda l: (l["y"], l["x"]))
+    merged = []
+    for ln in lines:
+        target = None
+        for m in merged:
+            gap = ln["y"] - (m["y"] + m["h"])
+            ov = min(m["x"] + m["w"], ln["x"] + ln["w"]) - max(m["x"], ln["x"])
+            if -0.1 * med_h <= gap <= merge_gap * med_h and ov > 0.4 * min(m["w"], ln["w"]):
+                target = m
+                break
+        if target is None:
+            merged.append(dict(ln, parts=[ln]))
+        else:
+            target["parts"].append(ln)
+            x1 = min(target["x"], ln["x"]); y1 = target["y"]
+            x2 = max(target["x"] + target["w"], ln["x"] + ln["w"])
+            y2 = max(target["y"] + target["h"], ln["y"] + ln["h"])
+            target.update(x=x1, y=y1, w=x2 - x1, h=y2 - y1)
+
+    # 5) a real label contains at least one real word somewhere in it: >=4 letters, or a short
+    #    3-letter word (DST, FIT, Gaz) that OCR read with high confidence
+    out = []
+    for m in merged:
+        if not any(_alpha(w["text"]) >= 4 or (_alpha(w["text"]) >= 3 and w["conf"] >= 80)
+                   for p in m["parts"] for w in p["words"]):
+            continue
+        text = " ".join(w["text"] for p in m["parts"] for w in p["words"])
+        lh = float(np.median([p["h"] for p in m["parts"]]))
+        out.append(dict(text=text, x=m["x"], y=m["y"], w=m["w"], h=m["h"], lh=lh))
+
+    # 6) accept short labels ("S", "Ls", "5") when they share a left edge or centre line
+    #    with at least 2 real labels (i.e. they sit in the same label column)
+    tol = max(4.0, med_h)
+    strong = list(out)
+    for ln in weak:
+        if not 0.5 * med_h <= ln["h"] <= 1.8 * med_h:
+            continue
+        if any(min(ln["x"] + ln["w"], l["x"] + l["w"]) > max(ln["x"], l["x"]) and
+               min(ln["y"] + ln["h"], l["y"] + l["h"]) > max(ln["y"], l["y"]) for l in strong):
+            continue                                   # already part of a real label
+        lcx = ln["x"] + ln["w"] / 2
+        n_left = sum(abs(ln["x"] - l["x"]) < tol for l in strong)
+        n_mid = sum(abs(lcx - (l["x"] + l["w"] / 2)) < tol for l in strong)
+        if max(n_left, n_mid) >= 2:
+            out.append(dict(text=ln["words"][0]["text"], x=ln["x"], y=ln["y"], w=ln["w"], h=ln["h"], lh=ln["h"]))
+
+    # 7) tesseract's page pass often returns nothing at all for 1-2 character text, so also look
+    #    for small ink blobs that sit on the left edge of a label column and read each on its own
+    if len(strong) >= 2:
+        mask = ink_mask(img)
+        for l in out:                                   # paint out text already found
+            mask[max(int(l["y"]) - 2, 0):int(l["y"] + l["h"]) + 3, max(int(l["x"]) - 2, 0):int(l["x"] + l["w"]) + 3] = 0
+        k = max(3, int(0.35 * med_h))
+        glued = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+        n, _, st, _ = cv2.connectedComponentsWithStats(glued, connectivity=8)
+        for i in range(1, n):
+            bx, by, bw, bh, _a = st[i]
+            bx, by, bw, bh = bx + k // 2, by + k // 2, max(bw - k, 1), max(bh - k, 1)   # undo dilation growth
+            if not (0.5 * med_h <= bh <= 1.8 * med_h and bw <= 2.5 * bh):
+                continue
+            if sum(abs(bx - l["x"]) < tol for l in strong) < 2:
+                continue
+            if any(abs(bx - l["x"]) < tol and abs((by + bh / 2) - (l["y"] + l["h"] / 2)) < 0.7 * med_h for l in out):
+                continue
+            t, c = _read_short(img, bx, by, bw, bh)
+            if t and c >= 50:
+                out.append(dict(text=t, x=float(bx), y=float(by), w=float(bw), h=float(bh), lh=float(bh)))
     return out
 
 
+def _read_short(img, x, y, w, h, pad=4):
+    """OCR a tiny crop as ONE word (psm 8; psm 10 for a single glyph). Returns (text, conf)."""
+    H, W = img.shape[:2]
+    x0, y0, x1, y1 = max(int(x) - pad, 0), max(int(y) - pad, 0), min(int(x + w) + pad, W), min(int(y + h) + pad, H)
+    g = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    sc = float(np.clip(40.0 / max(h, 1.0), 1.0, 6.0))
+    g = cv2.resize(g, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+    g = cv2.copyMakeBorder(g, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+    best = ("", 0.0)
+    for psm in (8, 10):
+        d = pytesseract.image_to_data(g, config=f"--psm {psm}", output_type=pytesseract.Output.DICT)
+        for t, c in zip(d["text"], d["conf"]):
+            t = t.strip()
+            if t.isalnum() and len(t) <= 2 and float(c) > best[1]:
+                best = (t, float(c))
+    return best
+
+
+def ocr_region(img, x0, y0, x1, y1, u=12.0):
+    """Read the text inside a window (psm 6 = block of text, so multi-line labels stay together)."""
+    if pytesseract is None or not OCR_ENABLED:
+        return ""
+    H, W = img.shape[:2]
+    x0, y0, x1, y1 = max(int(x0), 0), max(int(y0), 0), min(int(x1), W), min(int(y1), H)
+    if x1 - x0 < 10 or y1 - y0 < 6:
+        return ""
+    gray = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
+    s = float(np.clip(40.0 / max(u, 1.0), 1.0, 4.0))          # aim for ~40 px tall text
+    big = cv2.resize(gray, None, fx=s, fy=s, interpolation=cv2.INTER_CUBIC)
+    big = cv2.copyMakeBorder(big, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+    txt = pytesseract.image_to_string(big, config="--psm 6")
+    toks = []
+    for line in txt.splitlines():
+        for t in re.sub(r"[^A-Za-z0-9()/,.&\- ]+", " ", line).split():
+            if sum(c.isalnum() for c in t) >= 1:
+                toks.append(t)
+    if len(toks) == 1 and len(toks[0]) <= 2 and toks[0].isalnum():
+        return toks[0]                            # a short code label ("S", "Ls")
+    if not any(_alpha(t) >= 4 for t in toks):     # nothing word-like: it was hatch/dash junk
+        return ""
+    return " ".join(toks)
+
+
 def text_unit(labels, default=10.0):
-    """Typical text height in px: every pixel threshold below scales with this."""
-    return float(np.median([l["h"] for l in labels])) if labels else default
+    """Typical height of ONE text line in px: every pixel threshold below scales with this."""
+    return float(np.median([l.get("lh", l["h"]) for l in labels])) if labels else default
 
 
 def left_evidence(img, labels):
@@ -247,12 +392,28 @@ def side_coverage(mask, x, y, w, h):
             sub[:, :t].any(axis=1).mean(), sub[:, -t:].any(axis=1).mean())
 
 
+def label_window(b, boxes, u):
+    """Strip of the image directly under a framed swatch where its label should be."""
+    bx, by, bw, bh = b
+    pad = 0.15 * bw
+    y0 = by + bh + 3
+    y1 = y0 + 5 * u                                   # room for up to ~2-3 wrapped lines
+    for o in boxes:                                   # stop at the next swatch below in this column
+        if o is not b and o[1] > by + bh and o[0] < bx + bw and o[0] + o[2] > bx:
+            y1 = min(y1, o[1] - 2)
+    return bx - pad, y0, bx + bw + pad, y1
+
+
 def strategy_boxes(img, labels, dilate=None, min_w=None):
     """Framed swatches: find rectangles by their outline, then name them from nearby labels.
 
     OCR is NOT used to find swatches (its boxes can clip frames and its junk tokens
     mislead); a frame is any blob with ink along >=3 of its 4 sides -- text blobs
     don't have that.
+
+    Names: the global OCR label nearest below/right of the frame, but the strip under
+    the frame is also re-read on its own (multi-line aware). The reading with more
+    letters wins, so a label the global pass dropped or truncated is recovered.
     """
     u = text_unit(labels)
     dilate = dilate or max(3, int(0.25 * u) | 1)   # small: must not bridge the gap to the label
@@ -297,7 +458,12 @@ def strategy_boxes(img, labels, dilate=None, min_w=None):
                 best, bd = j, d
         if best is not None:
             used.add(best)
-        out.append((b, labels[best]["text"] if best is not None else ""))
+        g_name = labels[best]["text"] if best is not None else ""
+
+        # second opinion: re-read the strip under the frame (catches dropped / wrapped labels)
+        r_name = ocr_region(img, *label_window(b, boxes, u), u=u)
+        name = r_name if _alpha(r_name) > _alpha(g_name) else g_name
+        out.append((b, name))
     return out
 
 
@@ -306,108 +472,33 @@ def slug(s, fallback):
     return re.sub(r"[^A-Za-z0-9]+", "_", s).strip("_").lower() or fallback
 
 
-# ----------------------------------------------------------------------------
-# Naming: per-swatch OCR + snapping to known lithology names
-# ----------------------------------------------------------------------------
-KNOWN_NAMES = "ALTERED ZONE|ANDESITE|ANHYDRITE|BASALT|BENTONITE|BIOTITIZATION|BRECCIA|CALCARENITE|CALCAREOUS TUFF|CALCILUTITE|CARBONATES|CARBONACEOUS MAT|CARBONACEOUS SH|CEMENT CONTAM.|CHALK|CRYSTALLINE TUFF|CHERT - ARGILL|CHERT - GLASSY|CHERT - PORCEL|CHERT - TIGER STRIPE|CHERT - UNDIFF|CLAY|CLAY-MUDSTONE|CLYST-TUFFACEOUS|CHLORITIZATION|COAL|CONGLOMERATE|CONGL. SAND|CONGL. SANDSTONE|COQUINA|DACITE|DIATOMITE|DIORITE|DOLOSTONE|FELSIC SILIC DIKE|FOSSIL|GABBRO|GLASSY TUFF|GRANITE|GRANITE WASH|GRANODIORITE|GYPSUM|HALITE|HORNBL-QTZ-DIO|IGNEOUS (ACIDIC)|IGNEOUS (BASIC)|INTRUSIVES|KAOLINITIC|LIMESTONE|LITHIC TUFF|MARL - DOLO|MARL - CALC|METAMORPHICS|MUDSTONE|OBSIDIAN|PALEOSOL|PHOSPHATE|PORCELANITE|PORCELANEOUS CLYST|PYRITE|PYROCLASTICS|QUARTZ DIORITE|QUARTZ LATITE|QUARTZ MONZONITE|RECRYSTALLIZED CALCITE|RHYOLITE|SALT|SAND|SANDSTONE|SANDSTONE-TUFFACEOUS|SERICITIZATION|SERPENTINE|SHALE|SHALE TUFFACEOUS|SHELL FRAGMENTS|SIDERITE|SILICIFICATION|SILTSTONE|SILTST-TUFFACEOUS|TUFF|VOLCANICLASTICS SEDS|VOLCANICS|DOLOMITE|SILTY SANDSTONE|SAND AND SANDSTONE".split("|")
-
-
-def _norm(t):
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", t.lower())).strip()
-
-
-def load_names(path=None):
-    names = list(KNOWN_NAMES)
-    if path:
-        names += [l.strip() for l in open(path, encoding="utf-8") if l.strip()]
-    return names
-
-
-def snap_name(text, names, cutoff=0.8):
-    """Replace OCR text by the closest known lithology name (if close enough)."""
-    import difflib
-    n = _norm(text)
-    if not n:
-        return ""
-    table = {_norm(k): k for k in names}
-    hit = difflib.get_close_matches(n, list(table), n=1, cutoff=cutoff)
-    return table[hit[0]].title() if hit else text.strip()
-
-
-def _join_spaced_letters(line):
-    """'A n h y d r i t e' -> 'Anhydrite' (runs of single characters become one word)."""
-    out, run = [], []
-    for tok in line.split():
-        if len(tok) == 1:
-            run.append(tok)
-        else:
-            if run: out.append("".join(run)); run = []
-            out.append(tok)
-    if run: out.append("".join(run))
-    return " ".join(out)
-
-
-def ocr_below(img, bb, limit_y, u, scale=3):
-    """OCR the block of text under a frame (any number of lines) as ONE label."""
-    H, W = img.shape[:2]
-    x, y, w, h = [int(v) for v in bb]
-    x0, x1 = max(int(x - 0.3 * w), 0), min(int(x + 1.3 * w), W)
-    y0, y1 = int(y + h + 0.15 * u), int(min(y + h + 3.6 * u, limit_y - 2))
-    if y1 - y0 < u or x1 <= x0:
-        return ""
-    g = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
-    g = cv2.copyMakeBorder(g, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=255)
-    g = cv2.resize(g, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    txt = pytesseract.image_to_string(g, config="--psm 6")
-    lines = [_join_spaced_letters(re.sub(r"[^A-Za-z0-9 .()\-]", " ", l)).strip() for l in txt.splitlines()]
-    lines = [l for l in lines if sum(c.isalpha() for c in l) >= 3]
-    return " ".join(lines)
-
-
-def refine_box_names(img, pairs, labels, names):
-    """Name each frame from OCR of the text under it; fall back to the first-pass label."""
-    if not pairs or pytesseract is None:
-        return pairs
-    u = text_unit(labels)
-    boxes = [b for b, _ in pairs]
-    H = img.shape[0]
-    out = []
-    for b, first in pairs:
-        bx, by, bw, bh = b
-        below = [o[1] for o in boxes if o[1] > by + bh * 0.5 and abs((o[0] + o[2] / 2) - (bx + bw / 2)) < 0.6 * bw]
-        limit = min(below) if below else H
-        txt = ocr_below(img, b, limit, u)
-        out.append((b, snap_name(txt or first, names)))
-    return out
-
-
-def detect(img, labels, layout="auto", names=None):
+def detect(img, labels, layout="auto"):
     """Run the chosen strategy. Returns ([(bbox, label), ...], strategy_description)."""
-    names = names or KNOWN_NAMES
     ev = left_evidence(img, labels) if labels else 0.0
     if layout == "left" or (layout == "auto" and ev >= 0.6):
         p, _ = strategy_left(img, labels)
-        p = [(b, snap_name(n, names)) for b, n in p]
         return p, f"left (ink beside {ev:.0%} of labels)"
-    p = refine_box_names(img, strategy_boxes(img, labels), labels, names)
-    return p, f"boxes (ink beside {ev:.0%} of labels)"
+    return strategy_boxes(img, labels), f"boxes (ink beside {ev:.0%} of labels)"
 
 
 def main():
+    global OCR_ENABLED
     ap = argparse.ArgumentParser()
     ap.add_argument("image"); ap.add_argument("out_dir")
     ap.add_argument("--layout", choices=["auto", "left", "boxes"], default="auto")
     ap.add_argument("--no-ocr", action="store_true")
-    ap.add_argument("--names", help="text file with extra known lithology names, one per line")
+    ap.add_argument("--keep-unnamed", action="store_true",
+                    help="save swatches without a label as swatch_NNN instead of skipping them (debugging)")
     ap.add_argument("--pad", type=int, default=0)
     a = ap.parse_args()
+    OCR_ENABLED = not a.no_ocr
 
     img = cv2.imread(a.image)
     if img is None:
         sys.exit(f"cannot read {a.image}")
     labels = ocr_labels(img) if (pytesseract and not a.no_ocr) else []
 
-    pairs, used = detect(img, labels, a.layout, load_names(a.names))
+    pairs, used = detect(img, labels, a.layout)
 
     out = Path(a.out_dir); out.mkdir(parents=True, exist_ok=True)
     for old in out.glob("*.png"):
@@ -415,8 +506,9 @@ def main():
     dbg = img.copy(); rows = []; seen = {}
     H, W = img.shape[:2]
     # unnamed swatches are not patterns (empty frames, stray boxes): don't save them
-    skipped = [b for b, n in pairs if not n]
-    pairs = [(b, n) for b, n in pairs if n]
+    skipped = [] if a.keep_unnamed else [b for b, n in pairs if not n]
+    if not a.keep_unnamed:
+        pairs = [(b, n) for b, n in pairs if n]
     for x, y, w, h in skipped:
         cv2.rectangle(dbg, (x, y), (x + w, y + h), (160, 160, 160), 1)
     for i, ((x, y, w, h), name) in enumerate(pairs):
