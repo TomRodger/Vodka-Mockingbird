@@ -128,3 +128,40 @@ def save_montage(path, descs, labels, margin, per_row=14):
             d.rectangle([x - 1, y - 1, x + tw, y + th],
                         outline=(220, 0, 0) if descs[i]["thin"] else (160, 160, 160))
     img.save(path)
+
+
+def _fmt_depth(v):
+    return "?" if v is None or v != v else f"{v:.1f}"      # v != v: NaN
+
+
+def save_annotated(path, image, annotation, rows, max_h=30000, col_w=120):
+    """The brief's annotated image: the original lithology column with each interval's
+    boundary line, depth range, lithology name and cluster id beside it.
+
+    Tall columns are scaled down to max_h pixels; an interval's text is drawn only if it is
+    tall enough to fit after scaling (its boundary line and colour bar are always drawn).
+    The bar colour is per lithology NAME, so one rock split into several clusters still
+    reads as one colour."""
+    import json
+    with open(annotation) as f:
+        x0, y0, x1, y1 = json.load(f)["bounding_boxes"]["interpreted_lithology_column"]
+    ya = min(r["top_y"] for r in rows)
+    yb = max(r["bottom_y"] for r in rows)
+    col = Image.open(image).crop((x0, ya, x1, yb)).convert("RGB")
+    s = min(1.0, max_h / col.height)
+    col = col.resize((col_w, max(1, round(col.height * s))), Image.Resampling.NEAREST)
+
+    names = sorted({r["lithology"] for r in rows if r["lithology"] not in ("unknown", "no_data")})
+    colours = dict(zip(names, palette(len(names))), unknown=(150, 150, 150), no_data=(230, 230, 230))
+    canvas = Image.new("RGB", (col_w + 420, col.height), "white")
+    canvas.paste(col, (0, 0))
+    d, f = ImageDraw.Draw(canvas), font(13)
+    for r in rows:
+        a, b = (r["top_y"] - ya) * s, (r["bottom_y"] - ya) * s
+        d.rectangle([col_w + 4, a, col_w + 18, max(a, b - 1)], fill=colours[r["lithology"]])
+        d.line([(0, a), (col_w + 24, a)], fill=(220, 0, 0), width=1)
+        if b - a >= 16:
+            c = "" if r["cluster_id"] < 0 else f"  [c{r['cluster_id']}]"
+            text = f"{r['lithology']}{c}  {_fmt_depth(r['top_depth'])}-{_fmt_depth(r['base_depth'])} ft"
+            d.text((col_w + 26, (a + b) / 2), text, fill=(0, 0, 0), font=f, anchor="lm")
+    canvas.save(path)

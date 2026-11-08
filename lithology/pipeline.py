@@ -6,7 +6,7 @@ Writes <DIR>/<scan>.csv (the brief's output) and <DIR>/<scan>_annotated.png, and
 one JSON line at the end with timing, peak memory and counts. lithology.batch reads that
 line to build its log, so keep it the LAST thing printed.
 
-Legend matching (3b) is not written yet: every rock interval is "unknown" for now.
+Lithology names come from lithology.legend_match: "unknown" when no legend swatch is close.
 """
 
 import argparse
@@ -23,19 +23,13 @@ from .cluster import run as cluster_run
 from .data import OUT_DIR
 from .depth.depth_converter import DepthConverter
 from .depth.extract_depths import extract as extract_markers
-from .output import write_csv
+from .legend_match import name_clusters
+from .output import save_annotated, write_csv
 
 # The organisers' example.csv says bottom_depth; the slides say base_depth. Write both
 # (same values) until they confirm: a scorer ignores a column it doesn't ask for, but
 # fails on one that's missing.
 CSV_KEYS = ["top_y", "bottom_y", "cluster_id", "lithology", "top_depth", "bottom_depth", "base_depth"]
-
-
-def name_intervals(rows):
-    """Stand-in for legend matching. Blank paper (cluster -1) is "no_data" and must never be
-    matched: white paper would otherwise get the palest swatch's name."""
-    for r in rows:
-        r["lithology"] = "no_data" if r["cluster_id"] < 0 else "unknown"
 
 
 def add_depths(rows, image, annotation, work_dir):
@@ -76,18 +70,17 @@ def run(image, annotation, out_dir=None):
     res = cluster_run(image, annotation, out_dir=work_dir, quiet=True)   # segments too
     rows = [dict(top_y=m["top_y"], bottom_y=m["bottom_y"], cluster_id=m["cluster_id"])
             for m in res["merged"]]
-    name_intervals(rows)
+    n_swatches = name_clusters(image, annotation, rows)
     rows, depth_error = add_depths(rows, image, annotation, work_dir)
 
     write_csv(os.path.join(out_dir, stem + ".csv"), rows, CSV_KEYS)
-    # Annotated image: the cluster overlay for now (boundaries + cluster labels).
-    # TODO: add depth and lithology text once legend matching exists.
-    shutil.copy(res["overlay"], os.path.join(out_dir, stem + "_annotated.png"))
+    save_annotated(os.path.join(out_dir, stem + "_annotated.png"), image, annotation, rows)
 
     return dict(document=stem, status="ok", error=depth_error,
                 seconds=round(time.perf_counter() - t0, 1), peak_mb=peak_memory_mb(),
                 n_intervals=len(rows), n_clusters=res["n_clusters"],
-                n_no_data=sum(r["cluster_id"] < 0 for r in rows),
+                n_no_data=sum(r["cluster_id"] < 0 for r in rows), n_swatches=n_swatches,
+                n_unknown=sum(r["lithology"] == "unknown" for r in rows),
                 n_nan_depths=sum(math.isnan(r[k]) for r in rows for k in ("top_depth", "base_depth")))
 
 
