@@ -7,15 +7,84 @@ image** (`top_y`, `bottom_y`); nothing resizes coordinates. Run everything from 
 |---|---|---|
 | `segment.py` | 1. find interval boundaries in the lithology column | `python -m lithology.segment IMAGE JSON [PREFIX]` |
 | `cluster.py` | 2. group intervals by visual pattern | `python -m lithology.cluster IMAGE JSON [--intervals CSV]` |
+| `legend_extractor.py` | 3a. cut the legend into named swatches | `python -m lithology.legend_extractor LEGEND.png OUT_DIR` |
+| `legend_match.py` | 3b. name each cluster from its document's legend | `python -m lithology.legend_match IMAGE JSON MERGED_CSV` |
 | `depth/` | 4. read the depth ruler, convert rows to depths | see `depth/README.md` |
+| `pipeline.py` | all stages on one document: the brief's CSV + annotated image | `python -m lithology.pipeline IMAGE JSON` |
+| `batch.py` | every dataset scan, one process each; logs crashes, time, memory | `python -m lithology.batch` |
 | `features.py` | shared features: column intervals *and* legend swatches | |
 | `data.py` | dataset paths, annotation loading, cropping | |
 | `output.py` | CSV and image writers | |
 | `evaluate.py` | scoring against truth; the example check | `python -m lithology.evaluate` |
 
-Stage 3 (legend matching: a rock name per cluster) and the final CSV + annotated image the
-brief asks for are not built yet. Legend matching should use `features.py` and the
-`*_representatives.json` that clustering writes.
+`pipeline.py` writes `<scan>.csv` (`top_y, bottom_y, cluster_id, lithology, top_depth,
+bottom_depth, base_depth`) and `<scan>_annotated.png`, drawn on the original scan (tall logs
+split into `_p01`, `_p02`, ... pages at full resolution). Legend matching needs Tesseract
+(`brew install tesseract`, `pip install pytesseract`); without it every rock is `unknown`.
+
+# Legend matching (stage 3b)
+
+Names each cluster from the document's own legend, so a new legend layout needs no new code.
+For each cluster it takes the cluster's tallest interval (most reliable texture) and compares
+it with every swatch the extractor found:
+
+1. **Colour leads.** Column and legend are on the same scan, drawn by the same software, so a
+   rock's fill colour matches its swatch closely. No swatch within ΔE 25 gives `unknown`
+   instead of a forced wrong name.
+2. **Mark shapes break colour ties.** Many legends have several rocks with the same fill
+   (ardennes: Shale, Clay-shale, Marl, Sandy Clay-Shale are all green; black-and-white logs:
+   every swatch is white). Among swatches within ΔE 8 of the best, the closest *mix of mark
+   shapes* wins (see below).
+3. **The commoner rock wins exact ties.** In the example legend Shale and Clay are both plain
+   horizontal dashes, so the drawing cannot separate them. A fixed "most common in mudlogs"
+   order decides. This is a stated prior, not a measurement.
+
+Blank paper (`cluster_id -1`) is never matched: it would get the palest swatch's name.
+Drilling symbols in legends (casing, cores, DST, mud loss/gain, no sample) are filtered out,
+and OCR names are cleaned (junk symbols stripped, near-certain misreads like "Slity" fixed;
+legend-specific names kept exactly as written, since the brief asks for the legend's name).
+
+## Why mark shapes and not the pooled FFT
+
+Clustering still uses the pooled FFT. Legend matching does not, because the two compare
+different things:
+
+- **Clustering compares the column with itself.** Every interval is drawn by the same
+  software at the same scale and spacing, so shale at row 5,000 looks exactly like shale at
+  row 9,000. A spacing-based descriptor is the right tool (example: row ARI 0.988).
+- **Legend matching compares the column with the legend, and they are drawn differently.**
+  On the example, column shale is rows of long dashes and legend shale is staggered short
+  dashes; column sandstone is dots in neat rows, legend sandstone is a dense dot grid; and
+  the scale differs. The FFT measures exactly what changes between the two drawings.
+
+Measured on the example (17 true intervals, 3 rocks, legend of 10 swatches):
+
+| method | right rock |
+|---|---|
+| pooled FFT | 0/17 (the correct swatch ranked 2nd to 5th at every scale tried) |
+| pooled FFT + best legend scale (0.25x to 3.6x, one scale per document) | 0/17 |
+| template matching (normalised cross-correlation, 0.8x to 1.25x) | wrong; best overlaps only 0.15 to 0.43 |
+| **mark-shape mix** | **17/17** |
+
+What stays the same between the two drawings is the *kind* of mark, not its spacing.
+`mark_shapes()` labels each connected ink mark as dot (solid, roughly round, any size),
+blob (L, T, triangle, cross symbols: mostly empty inside their box), horizontal, vertical,
+long line or grid, drops border and frame lines, and describes a patch by the fraction of
+marks in each class. The fractions don't depend on scale or spacing.
+
+Rule of thumb: **FFT when comparing like with like, shapes when comparing two different
+drawings of the same rock.**
+
+Idea for later (unmeasured): the shape mix ignores where marks sit horizontally, which is
+what splits one rock into several clusters on colour logs (ardennes: one green shale in 5
+clusters). It may help clustering too. Test it with row ARI on labelled sections first.
+
+## Results across the dataset (final run)
+
+51 of 51 real scans, 0 crashes (the 52nd file is a byte-identical `(1)` duplicate with no
+annotation). 11,999 intervals, 6.5% `unknown`, 30 documents with none. 8 missing depth
+values. Median 25 s and 0.6 GB per document (max 131 s, 4.1 GB). Accuracy beyond the example
+is checked by eye only until labelled sections exist: `python -m tools.label_tool score`.
 
 # Clustering (stage 2)
 
