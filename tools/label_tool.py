@@ -151,11 +151,18 @@ def render_pages(im, boxes, y0, y1, out_base, lines=(), bands=()):
     return paths, scale
 
 
-def save_legend(im, boxes, stem):
+def section_dir(stem, y0):
+    """One folder per labelled section, holding only its pages, legend and check pages."""
+    d = os.path.join(VIEWS_DIR, f"{stem}__y{y0}")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def save_legend(im, boxes, folder):
     leg = im.crop(boxes["lithology_legend"]).convert("RGB")
     if leg.width > 1600:
         leg = leg.resize((1600, round(leg.height * 1600 / leg.width)))
-    path = os.path.join(VIEWS_DIR, f"{stem}__legend.png")
+    path = os.path.join(folder, "legend.png")
     leg.save(path)
     return path
 
@@ -258,7 +265,9 @@ def cmd_show(args):
     if y1 - y0 < 50:
         sys.exit(f"Section is outside the column. Column rows are {lith[1]}-{lith[3]}.")
     os.makedirs(LABELS_DIR, exist_ok=True)
-    os.makedirs(VIEWS_DIR, exist_ok=True)
+    folder = section_dir(stem, y0)
+    for old in glob.glob(os.path.join(folder, "page_*.png")):
+        os.remove(old)                       # a re-run with a new height leaves no stale pages
     im = Image.open(img)
 
     txt = label_path(stem, y0, "txt")
@@ -290,12 +299,12 @@ def cmd_show(args):
         print(f"Draft labels ({len(draft)} intervals): {txt}")
 
     lines = [(y, str(y), (220, 0, 0)) for y in peaks]
-    pages, scale = render_pages(im, boxes, y0, y1,
-                                os.path.join(VIEWS_DIR, f"{stem}__y{y0}"), lines=lines)
-    print(f"Legend: {save_legend(im, boxes, stem)}")
-    print(f"Section rows {y0}-{y1}, zoom x{scale}, {len(pages)} page(s):")
-    for p in pages:
-        print(f"  {p}")
+    pages, scale = render_pages(im, boxes, y0, y1, os.path.join(folder, "page"), lines=lines)
+    save_legend(im, boxes, folder)
+    print(f"Section rows {y0}-{y1}, zoom x{scale}: {len(pages)} page(s) + legend.png in")
+    print(f"  {folder}")
+    print(f"Look:  open \"{folder}\"")
+    print(f"Edit:  open -e \"{txt}\"")
 
 
 def cmd_check(args):
@@ -317,9 +326,10 @@ def cmd_check(args):
     cols = {n: colour_for(i) for i, n in enumerate(names)}
     bands = [(a, b, n, cols[n]) for a, b, n in intervals]
     lines = [(a, "", (0, 60, 220)) for a, _, _ in intervals[1:]]
-    os.makedirs(VIEWS_DIR, exist_ok=True)
-    pages, _ = render_pages(Image.open(img), boxes, top, bot,
-                            os.path.join(VIEWS_DIR, f"{stem}__y{y0}_check"),
+    folder = section_dir(stem, y0)
+    for old in glob.glob(os.path.join(folder, "check_*.png")):
+        os.remove(old)
+    pages, _ = render_pages(Image.open(img), boxes, top, bot, os.path.join(folder, "check"),
                             lines=lines, bands=bands)
 
     print(f"OK: {len(intervals)} intervals, rows {top}-{bot} -> {csv_path}")
