@@ -13,6 +13,9 @@ image** (`top_y`, `bottom_y`); nothing resizes coordinates. Run everything from 
 | `depth/depth_finder.py` | bonus: find the depth ruler without its annotation box | `python -m lithology.depth.depth_finder IMAGE` |
 | `pipeline.py` | all stages on one document: the brief's CSV + annotated image | `python -m lithology.pipeline IMAGE JSON` |
 | `batch.py` | every dataset scan, one process each; logs crashes, time, memory | `python -m lithology.batch` |
+| `inclusions.py` | merge small partial-width symbols into the rock around them | (called by `pipeline.py`) |
+| `qc.py` | quality checks: which outputs to trust (see below) | (called by `pipeline.py`) |
+| `legend_finder.py`, `lithology_finder.py`, `depth/depth_finder.py` | bonus: find the legend, lithology column and depth ruler without the supplied boxes | see "Bonus" below |
 | `features.py` | shared features: column intervals *and* legend swatches | |
 | `data.py` | dataset paths, annotation loading, cropping | |
 | `output.py` | CSV and image writers | |

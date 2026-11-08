@@ -17,11 +17,7 @@ __pycache__/
 *_crop.png
 *_intervals.csv
 !tools/labels/*.csv
-
-# Node
-node_modules/
-dist/
-*.tsbuildinfo
+/test_out/
 
 # Editors / OS
 .vscode/

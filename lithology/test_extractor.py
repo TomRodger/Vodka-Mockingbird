@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Sanity test for legend_cutter on an unseen legend (no ground truth needed).
+Sanity test for the legend extractor on an unseen legend (no ground truth needed).
 
 Usage:
-  python test_legend.py legend.png [--expected N] [--layout auto|left|boxes] [--out DIR]
+  python -m lithology.test_extractor legend.png [--expected N] [--layout auto|left|boxes] [--out DIR]
 
 FAIL  = output is wrong/unusable      -> exit code 1
 WARN  = suspicious, look at the overlay
@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-import legend_extractor as lc
+from lithology import legend_extractor as lc
 
 
 def iou(a, b):

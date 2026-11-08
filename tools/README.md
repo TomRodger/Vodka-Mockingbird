@@ -1,7 +1,25 @@
-# tools: labelling and descriptor testing (development only, not part of the pipeline)
+# tools: labelling, scoring and evidence (development only, not part of the pipeline)
 
-Decides between FFT and HOG (plus variants) for describing lithology patterns,
-using hand-labelled sections of real columns. Everything runs on a laptop CPU.
+Hand-labelled sections of real columns are the ground truth for everything we measure:
+`label_tool.py` makes and scores them, `qc_eval.py` tests the quality checks against them,
+and `texture_test.py` (the original use) compared FFT and HOG texture descriptors.
+Everything runs on a laptop CPU.
+
+Quick reference:
+
+```
+python -m tools.label_tool show <scan> --y0 <row> --height <rows>   # draft a label + images
+python -m tools.label_tool check tools/labels/<file>.txt            # validate, write the .csv
+python -m tools.label_tool score tools/labels/<file>.txt            # pipeline vs your label
+python -m tools.qc_eval                                             # evidence behind lithology/qc.py
+```
+
+Labelling rules: a new line only where the rock changes across (nearly) the full column
+width; partial-width symbols belong to the rock around them; names exactly as the legend
+writes them; `no_data` for blank paper. A draft from `show` is the pipeline's own guess, so
+correct it rather than accept it (`--blank` gives boundaries only, every name `?`).
+
+The steps below are the original texture-descriptor workflow.
 
 | file | what it is |
 |---|---|
