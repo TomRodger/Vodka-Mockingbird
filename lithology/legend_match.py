@@ -36,7 +36,7 @@ Image.MAX_IMAGE_PIXELS = None
 COLOUR_MAX = 25.0    # Lab Delta-E: no swatch closer than this -> "unknown"
 COLOUR_TIE = 8.0     # swatches within this Delta-E of the best are colour-tied: texture decides
 # Legend entries that are drilling / log symbols, not rocks (ardennes lists casing, cores, DST).
-NOT_ROCK = re.compile(r"casing|core|\bdst\b|\bfit\b|shoe|show|survey|symbol|gas|oil", re.I)
+NOT_ROCK = re.compile(r"casing|core|\bdst\b|\bfit\b|shoe|show|survey|symbol|gas|oil|no sample|mud loss|mud gain", re.I)
 SHAPE_TIE = 0.15     # shape distances this close are a tie (then the commoner rock wins)
 TRIM = 4             # px removed from patch edges (frames, column borders, boundary lines)
 SAMPLE_ROWS = 512    # rows of a cluster's tallest interval used to describe it
@@ -112,6 +112,11 @@ def tighten(img, x, y, w, h):
     """Shrink a swatch box to the largest blob of ink inside it. The extractor's boxes can be
     offset or padded with paper (ardennes: Siltstone's box reaches into Limestone, Dolomite's
     includes white margin), and paper in the box makes the fill colour read as white."""
+    H, W = img.shape[:2]
+    x0, y0, x1, y1 = max(0, x), max(0, y), min(W, x + w), min(H, y + h)   # clip to the legend
+    if x1 - x0 < 1 or y1 - y0 < 1:
+        return None                                 # empty or outside the legend: not a swatch
+    x, y, w, h = x0, y0, x1 - x0, y1 - y0
     sub = img[y:y + h, x:x + w]
     ink = lx.ink_mask(sub).astype(np.uint8)
     ink = cv2.dilate(ink, np.ones((5, 5), np.uint8))      # join a pattern's separate strokes
@@ -130,10 +135,18 @@ def legend_swatches(page, legend_box, fe):
     pairs, _ = lx.detect(img, labels)
     out = []
     for box, name in pairs:
-        name = clean_name(name or "")
-        x, y, w, h = tighten(img, *box)
-        if name and not NOT_ROCK.search(name) and w > 2 * TRIM and h > 2 * TRIM:
-            out.append((name, describe_patch(img[y:y + h, x:x + w], fe)))
+        # One bad box (empty, off the edge, unreadable) must cost that swatch only, never the
+        # whole legend: before this, one empty box turned every mc761 / neptune rock "unknown".
+        try:
+            name = clean_name(name or "")
+            box = tighten(img, *box)
+            if box is None or not name or NOT_ROCK.search(name):
+                continue
+            x, y, w, h = box
+            if w > 2 * TRIM and h > 2 * TRIM:
+                out.append((name, describe_patch(img[y:y + h, x:x + w], fe)))
+        except Exception:
+            continue
     return out
 
 
