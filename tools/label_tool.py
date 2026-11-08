@@ -15,6 +15,15 @@ Run from the repo root:
       validates your edited label file, writes the matching .csv, and renders
       your labels over the section so you can verify them
 
+  python -m tools.label_tool score tools/labels/STEM__y10335.txt
+      runs the whole pipeline on the labelled rows and scores it against your labels:
+      boundary recall / precision (within 20 px), row ARI (clusters) and name accuracy
+
+The draft from `show` is the PIPELINE'S OWN GUESS (boundaries and legend names), to save
+typing. That biases labels towards the pipeline, so check every line against the column and
+every name against the legend; a label that just accepts the draft scores 100% and means
+nothing. Use --blank for boundaries only, with every name left as '?'.
+
 STEM can be the full document name (without extension) or any unique prefix.
 """
 
@@ -165,6 +174,31 @@ def draft_boundaries(im, box, y0, y1):
     return [y0 + c for c in cuts[1:-1]]
 
 
+def predict(img, stem, y0, y1):
+    """The full pipeline's intervals for rows y0..y1: segment, cluster, then legend names.
+    Returns [{top_y, bottom_y, cluster_id, lithology}], clipped to the section."""
+    import tempfile
+    from lithology.cluster import run as cluster_run
+    from lithology.legend_match import name_clusters
+    ann = f"{ANN_DIR}/{stem}.json"
+    with tempfile.TemporaryDirectory() as tmp:
+        res = cluster_run(img, ann, y0=y0, y1=y1, out_dir=tmp, quiet=True)
+    rows = [dict(top_y=max(m["top_y"], y0), bottom_y=min(m["bottom_y"], y1), cluster_id=m["cluster_id"])
+            for m in res["merged"] if m["bottom_y"] > y0 and m["top_y"] < y1]
+    name_clusters(img, ann, rows)
+    return rows
+
+
+def legend_names(im, boxes):
+    """The legend's rock names as the pipeline reads them: type label names exactly like these."""
+    from lithology.features import FeatureExtractor
+    from lithology.legend_match import legend_swatches
+    try:
+        return [n for n, _ in legend_swatches(im, boxes["lithology_legend"], FeatureExtractor())]
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------- label files
 
 def read_labels(path):
@@ -228,19 +262,32 @@ def cmd_show(args):
     im = Image.open(img)
 
     txt = label_path(stem, y0, "txt")
-    peaks = draft_boundaries(im, lith, y0, y1)
+    if args.blank:
+        draft = [(y, "?") for y in [y0] + draft_boundaries(im, lith, y0, y1)]
+    else:
+        # Pipeline guess: "unknown" stays "?" so you must fill it; no_data is kept as is.
+        draft = [(r["top_y"], "?" if r["lithology"] == "unknown" else r["lithology"])
+                 for r in predict(img, stem, y0, y1)]
+        draft[0] = (y0, draft[0][1])
+    peaks = [y for y, _ in draft[1:]]
     if os.path.exists(txt) and not args.force:
         print(f"Label file exists, NOT overwriting your edits: {txt}\n"
               f"(use --force to replace it with a fresh draft)")
     else:
+        names = legend_names(im, boxes)
         with open(txt, "w") as f:
             f.write(f"# {stem}\n# Each line starts an interval: <pixel row> <lithology as named in the legend>\n"
                     f"# Delete a line to merge two intervals; add a line to split one.\n"
-                    f"# The last line must be '<row> END'. Rows are full-image pixel rows.\n")
-            for y in [y0] + peaks:
-                f.write(f"{y} ?\n")
+                    f"# The last line must be '<row> END'. Rows are full-image pixel rows.\n"
+                    f"# Blank paper with no rock drawn: no_data\n")
+            if not args.blank:
+                f.write("# DRAFT = THE PIPELINE'S GUESS. Check every row and every name; don't just accept it.\n")
+            if names:
+                f.write("# Legend names (type them exactly like this):\n#   " + ", ".join(names) + "\n")
+            for y, n in draft:
+                f.write(f"{y} {n}\n")
             f.write(f"{y1} END\n")
-        print(f"Draft labels ({len(peaks) + 1} intervals): {txt}")
+        print(f"Draft labels ({len(draft)} intervals): {txt}")
 
     lines = [(y, str(y), (220, 0, 0)) for y in peaks]
     pages, scale = render_pages(im, boxes, y0, y1,
@@ -286,6 +333,32 @@ def cmd_check(args):
         print(f"  {p}")
 
 
+def cmd_score(args):
+    """Score the pipeline against a finished label file."""
+    from lithology.evaluate import row_labels, score
+    stem, y0 = parse_label_name(args.labels)
+    stem, img, boxes = resolve(stem)
+    truth = [dict(top_y=a, bottom_y=b, lithology=n) for a, b, n in read_labels(args.labels)]
+    top, bot = truth[0]["top_y"], truth[-1]["bottom_y"]
+    pred = predict(img, stem, top, bot)
+    res = score(truth, pred, len(pred))
+    # Name accuracy per row: the share of labelled rows whose predicted name is the label's.
+    t = row_labels(truth, "lithology", top, bot)
+    p = row_labels(pred, "lithology", top, bot)
+    ok = [(a, b) for a, b in zip(t, p) if a is not None and b is not None]
+    same = sum(str(a).strip().lower() == str(b).strip().lower() for a, b in ok)
+    print(f"{stem}  rows {top}-{bot}: {len(truth)} labelled intervals, {len(pred)} predicted")
+    print(f"  boundaries: recall {res['b_recall']:.2f}  precision {res['b_precision']:.2f}  (within 20 px)")
+    print(f"  clusters:   row ARI {res['row_ari']:.3f}")
+    print(f"  names:      {same / max(1, len(ok)):.1%} of rows named as labelled")
+    wrong = {}
+    for a, b in ok:
+        if str(a).strip().lower() != str(b).strip().lower():
+            wrong[(a, b)] = wrong.get((a, b), 0) + 1
+    for (a, b), n in sorted(wrong.items(), key=lambda kv: -kv[1])[:8]:
+        print(f"    {n:6d} rows: labelled {a!r}, predicted {b!r}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -295,10 +368,13 @@ def main():
     s.add_argument("--y0", type=int, required=True, help="first pixel row of the section")
     s.add_argument("--height", type=int, default=2000, help="section height in pixel rows")
     s.add_argument("--force", action="store_true", help="overwrite an existing label file")
+    s.add_argument("--blank", action="store_true", help="draft boundaries only, every name '?'")
     c = sub.add_parser("check")
     c.add_argument("labels")
+    sc = sub.add_parser("score")
+    sc.add_argument("labels")
     args = ap.parse_args()
-    {"list": cmd_list, "show": cmd_show, "check": cmd_check}[args.cmd](args)
+    {"list": cmd_list, "show": cmd_show, "check": cmd_check, "score": cmd_score}[args.cmd](args)
 
 
 if __name__ == "__main__":
