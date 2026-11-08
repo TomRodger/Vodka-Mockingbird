@@ -337,6 +337,8 @@ def run(image, bbox, intervals_csv=None, truth_csv=None, y0=None, y1=None, textu
             print(f"  row ARI {res['row_ari']:.3f} | boundaries recall {res['b_recall']:.2f} "
                   f"precision {res['b_precision']:.2f} | true intervals {res['n_true']}")
         print(f"  outputs: {base}_*")
+    res["merged"] = merged                   # final intervals, for the pipeline (lithology.pipeline)
+    res["overlay"] = base + "_overlay.png"
     return res
 
 
