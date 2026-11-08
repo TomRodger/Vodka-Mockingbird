@@ -10,6 +10,7 @@ image** (`top_y`, `bottom_y`); nothing resizes coordinates. Run everything from 
 | `legend_extractor.py` | 3a. cut the legend into named swatches | `python -m lithology.legend_extractor LEGEND.png OUT_DIR` |
 | `legend_match.py` | 3b. name each cluster from its document's legend | `python -m lithology.legend_match IMAGE JSON MERGED_CSV` |
 | `depth/` | 4. read the depth ruler, convert rows to depths | see `depth/README.md` |
+| `depth/depth_finder.py` | bonus: find the depth ruler without its annotation box | `python -m lithology.depth.depth_finder IMAGE` |
 | `pipeline.py` | all stages on one document: the brief's CSV + annotated image | `python -m lithology.pipeline IMAGE JSON` |
 | `batch.py` | every dataset scan, one process each; logs crashes, time, memory | `python -m lithology.batch` |
 | `features.py` | shared features: column intervals *and* legend swatches | |
@@ -21,6 +22,11 @@ image** (`top_y`, `bottom_y`); nothing resizes coordinates. Run everything from 
 bottom_depth, base_depth`) and `<scan>_annotated.png`, drawn on the original scan (tall logs
 split into `_p01`, `_p02`, ... pages at full resolution). Legend matching needs Tesseract
 (`brew install tesseract`, `pip install pytesseract`); without it every rock is `unknown`.
+
+Use `--auto-depth` on the pipeline or depth extractor to locate the depth column
+from the scan. Multiple plausible rulers require an explicit `--depth-candidate`
+choice; check MD/TVD headings. Other pipeline boxes still come from the JSON.
+See `depth/README.md` for standalone commands and limits.
 
 # Legend matching (stage 3b)
 

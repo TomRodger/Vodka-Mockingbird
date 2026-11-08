@@ -291,7 +291,8 @@ def ruler_series(readings, series="primary"):
     return readings
 
 
-def extract(image_path, annotation_path, output_dir, chunk_height=1200, engine=None, series="primary"):
+def extract(image_path, annotation_path, output_dir, chunk_height=1200, engine=None, series="primary",
+            auto_depth=False, depth_candidate=None):
     """Read one scan's ruler and return its accepted depth markers.
 
     Paths should be pathlib.Path objects. output_dir must be a new folder.
@@ -299,22 +300,37 @@ def extract(image_path, annotation_path, output_dir, chunk_height=1200, engine=N
     Returns a list of dictionaries: pixel_y is the full-image row, and depth
     is the printed number. Pass those two fields to DepthConverter.
     series selects the main ruler or the coloured secondary ruler, not a unit.
+    Set auto_depth=True (or pass annotation_path=None) to find the column on
+    the scan. Other stages can still use their existing annotation boxes.
     """
     from PIL import Image, ImageDraw
 
-    # The supplied JSON tells us where the depth ruler sits in the full image.
-    annotation = json.loads(annotation_path.read_text(encoding="utf-8"))
-    x0, y0, x1, y1 = annotation["bounding_boxes"]["depth_column"]
+    annotation = json.loads(annotation_path.read_text(encoding="utf-8")) if annotation_path else None
+    engine = engine if engine is not None else create_ocr_engine()
+    location = None
+    if auto_depth or annotation is None or "depth_column" not in annotation.get("bounding_boxes", {}):
+        if __package__:
+            from .depth_finder import find_depth_column
+        else:  # Keep the documented `py extract_depths.py ...` command working.
+            sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+            from lithology.depth.depth_finder import find_depth_column
+        location = find_depth_column(image_path, engine=engine, series=series,
+                                     candidate_index=depth_candidate)
+        box = location["bbox"]
+    else:
+        box = annotation["bounding_boxes"]["depth_column"]
+    x0, y0, x1, y1 = box
     # Challenge scans are unusually tall, so allow their known large sizes.
     Image.MAX_IMAGE_PIXELS = None
     output_dir.mkdir(parents=True, exist_ok=False)
     candidates = []
-    engine = engine if engine is not None else create_ocr_engine()
     with Image.open(image_path) as image:
-        if image.size != (annotation["width"], annotation["height"]):
+        if annotation and image.size != (annotation["width"], annotation["height"]):
             raise ValueError("Image dimensions do not match its annotation.")
         if not (0 <= x0 < x1 <= image.width and 0 <= y0 < y1 <= image.height):
             raise ValueError("Depth-column bounding box is outside the image.")
+        if location is not None:
+            (output_dir / "depth_location.json").write_text(json.dumps(location, indent=2), encoding="utf-8")
         preview_bottom = min(y1, y0 + 1800)
         preview = image.crop((x0, y0, x1, preview_bottom)).convert("RGB")
         preview.save(output_dir / "depth_preview.png")
@@ -365,12 +381,18 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, default=default_image)
     parser.add_argument("--annotation", type=Path)
+    parser.add_argument("--auto-depth", action="store_true", help="Locate the depth column from the scan instead of JSON")
+    parser.add_argument("--depth-candidate", type=int, help="Choose a reported automatic ruler candidate (starting at 0)")
     parser.add_argument("--output-dir", type=Path, default=Path("results/example"))
     parser.add_argument("--series", choices=("primary", "secondary", "all"), default="primary",
                         help="Main black ruler, coloured secondary ruler, or all readings")
     args = parser.parse_args()
+    if args.depth_candidate is not None and not args.auto_depth:
+        parser.error("Use --auto-depth with --depth-candidate.")
     try:
-        extract(args.image, args.annotation or args.image.with_suffix(".json"), args.output_dir, series=args.series)
+        annotation = args.annotation if args.auto_depth else args.annotation or args.image.with_suffix(".json")
+        extract(args.image, annotation, args.output_dir, series=args.series,
+                auto_depth=args.auto_depth, depth_candidate=args.depth_candidate)
     except (ValueError, KeyError, OSError, ImportError) as error:
         parser.exit(1, f"Error: {error}\n")
 

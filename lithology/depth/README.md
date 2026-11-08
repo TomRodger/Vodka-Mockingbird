@@ -8,7 +8,7 @@ layer. Base means bottom.
 For each document:
 
 1. The original scan (.tif or .tiff).
-2. Its supplied annotation JSON, which shows where the depth column is.
+2. Its supplied annotation JSON, or use the automatic depth-column finder below.
 3. Your detected layers, with `top_y` and `bottom_y` for each layer.
 
 Send layer positions as pixel rows in the ORIGINAL full image. If you crop or
@@ -65,6 +65,62 @@ this folder's OCR packages):
 py -m pip install -r requirements.txt
 ```
 
+## Bonus: find the depth column automatically
+
+From the repository root, this searches the scan and prints a box without
+using the annotation or saving any files:
+
+```powershell
+py -m lithology.depth.depth_finder "path/to/scan.tif"
+```
+
+To find the column AND read its depth labels:
+
+```powershell
+py -m lithology.depth.extract_depths --image "path/to/scan.tif" --auto-depth --output-dir out/depth/my_scan
+```
+
+The finder looks for vertically aligned numbers which increase consistently.
+It searches several strips across the whole page at their original resolution,
+then reads the chosen narrow column to find its top and bottom. It uses the
+same RapidOCR dependencies as our existing reader. It does not need Tesseract.
+
+The output includes `depth_location.json`, containing the detected box,
+alternatives and a reminder to check the ruler heading. Box coordinates are
+`[left, top, right, bottom]` in the original full image.
+
+If two rulers look equally plausible, it reports their candidate boxes instead
+of guessing. Check the MD/TVD headings and rerun with `--depth-candidate 0`
+(or `1`, etc.). Finding a ruler does not establish its units or MD/TVD meaning.
+If no reliable ruler is found, use the supplied annotation as before.
+
+The full pipeline also accepts `--auto-depth`. It still needs the annotation
+for the lithology column and legend; only the depth box becomes automatic.
+Automatic location is an optional heuristic, not a guaranteed replacement for
+all dataset annotations. Tall TIFFs still have the existing Pillow memory cost.
+
+Initial live checks found a usable ruler on four scans: the organisers' example,
+`md5_mud_show_2`, `mc761 ... 1tvd`, and `gb506#2`. Detected boxes include padding
+around labels and can differ from the hand-drawn boxes. This is not a location
+accuracy score for the full dataset.
+An end-to-end automatic run on the example read 16 ruler labels and converted
+all 17 reference intervals: average absolute depth difference 0.12 ft, maximum
+0.19 ft, using the converter's default bounded extrapolation at the top edge.
+
+From Python:
+
+```python
+from pathlib import Path
+from lithology.depth.depth_finder import find_depth_column
+from lithology.depth.extract_depths import extract
+
+location = find_depth_column(Path("scan.tif"))
+print(location["bbox"])
+markers = extract(Path("scan.tif"), None, Path("out/depth/my_scan"))
+```
+
+## Use the supplied annotation
+
 Then, from this folder (`lithology/depth`), replace the placeholder paths with your files:
 
 ```powershell
@@ -102,11 +158,11 @@ layers_with_depths = [converter.convert_interval(layer) for layer in layers]
 
 - Use the same scan for the ruler and the layer positions. Depths keep the
   ruler's units and scale (for example feet and MD or TVD).
-- Blurry or cut-off labels can be missed. By default, a layer outside the
-  readable ruler range causes an error instead of a guessed depth.
-- A small extension can be enabled with `--max-extrapolation-pixels N` on the
-  converter, or `max_extrapolation_pixels=N` in Python. Choose N for the scan.
-  Layers using the extension get `depth_extrapolated=True`.
+- Blurry or cut-off labels can be missed. The converter normally allows an
+  extension of 1.5 typical label gaps. Beyond that, a boundary depth is `NaN`.
+- Choose an explicit limit with `--max-extrapolation-pixels N` on the converter,
+  or `max_extrapolation_pixels=N` in Python. Set N to 0 to disable extensions.
+  Layers outside readable labels get `depth_extrapolated=True`.
 - Validation covered all 51 unique dataset scans: each passed calibration
   checks. Twelve focused checks also passed. This is not an accuracy score:
   inspect the selected scale and allow for OCR/tick-position errors.

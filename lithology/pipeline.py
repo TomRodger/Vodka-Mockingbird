@@ -13,11 +13,15 @@ import argparse
 import json
 import math
 import os
-import resource
 import shutil
 import sys
 import time
 from pathlib import Path
+
+try:
+    import resource
+except ImportError:  # Windows has no resource module.
+    resource = None
 
 from .cluster import run as cluster_run
 from .data import OUT_DIR, load_annotation
@@ -33,13 +37,14 @@ from .output import save_annotated, write_csv
 CSV_KEYS = ["top_y", "bottom_y", "cluster_id", "lithology", "top_depth", "bottom_depth", "base_depth"]
 
 
-def add_depths(rows, image, annotation, work_dir):
+def add_depths(rows, image, annotation, work_dir, auto_depth=False, depth_candidate=None):
     """Read the ruler and add depths. If the ruler can't be read, the depths are NaN and the
     document still gets a CSV; the error is returned so the batch log shows it."""
     depth_dir = Path(work_dir) / "depth"
     shutil.rmtree(depth_dir, ignore_errors=True)       # extract() needs a fresh folder
     try:
-        markers = extract_markers(Path(image), Path(annotation), depth_dir)
+        markers = extract_markers(Path(image), Path(annotation), depth_dir,
+                                  auto_depth=auto_depth, depth_candidate=depth_candidate)
         converter = DepthConverter((m["pixel_y"], m["depth"]) for m in markers)
         error = None
     except Exception as e:                             # OCR failures raise ValueError, but
@@ -56,12 +61,34 @@ def add_depths(rows, image, annotation, work_dir):
 
 
 def peak_memory_mb():
-    """Peak memory of THIS process so far. ru_maxrss is bytes on macOS, kilobytes on Linux."""
+    """Peak memory of this process, on Windows, macOS or Linux."""
+    if resource is None:
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                (name, ctypes.c_size_t) for name in (
+                    "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                    "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                    "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        counters = Counters()
+        counters.cb = ctypes.sizeof(counters)
+        if not psapi.GetProcessMemoryInfo(kernel.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return round(counters.PeakWorkingSetSize / 1024 ** 2, 1)
+    # ru_maxrss is bytes on macOS and kilobytes on Linux.
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return round(peak / (1024 ** 2 if sys.platform == "darwin" else 1024), 1)
 
 
-def run(image, annotation, out_dir=None):
+def run(image, annotation, out_dir=None, auto_depth=False, depth_candidate=None):
     t0 = time.perf_counter()
     stem = os.path.splitext(os.path.basename(image))[0]
     out_dir = out_dir or os.path.join(OUT_DIR, "pipeline")
@@ -73,7 +100,7 @@ def run(image, annotation, out_dir=None):
             for m in res["merged"]]
     n_swatches = name_clusters(image, annotation, rows)
     rows, n_absorbed = absorb_inclusions(image, load_annotation(annotation)["interpreted_lithology_column"], rows)
-    rows, depth_error = add_depths(rows, image, annotation, work_dir)
+    rows, depth_error = add_depths(rows, image, annotation, work_dir, auto_depth, depth_candidate)
 
     write_csv(os.path.join(out_dir, stem + ".csv"), rows, CSV_KEYS)
     save_annotated(os.path.join(out_dir, stem + "_annotated.png"), image, annotation, rows)
@@ -91,8 +118,12 @@ def main():
     ap.add_argument("image")
     ap.add_argument("annotation")
     ap.add_argument("--out", help="output folder (default: out/pipeline)")
+    ap.add_argument("--auto-depth", action="store_true", help="Find the depth column without its annotation box")
+    ap.add_argument("--depth-candidate", type=int, help="Select an automatic ruler candidate (starting at 0)")
     a = ap.parse_args()
-    print(json.dumps(run(a.image, a.annotation, a.out)))
+    if a.depth_candidate is not None and not a.auto_depth:
+        ap.error("Use --auto-depth with --depth-candidate.")
+    print(json.dumps(run(a.image, a.annotation, a.out, a.auto_depth, a.depth_candidate)))
 
 
 if __name__ == "__main__":
