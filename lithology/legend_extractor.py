@@ -64,16 +64,55 @@ ROCK_WORDS = {
 
 
 def _rock_word(word):
-    return re.sub(r"[^a-z]", "", word.lower()) in ROCK_WORDS
+    """A complete rock name, allowing an OCR misread ("ILTSTONE", "Syivite")."""
+    import difflib
+    w = re.sub(r"[^a-z]", "", word.lower())
+    if len(w) < 4:
+        return False
+    return w in ROCK_WORDS or bool(difflib.get_close_matches(w, ROCK_WORDS, n=1, cutoff=0.85))
 
 
 def _separate_rows(upper, lower):
     """True if `lower` is the next legend row, not the second line of `upper`'s name.
-    A wrapped name breaks mid-name ("Silty" / "Sandstone", "Dolomitic" / "limestone"), so its
-    upper line does not END with a complete rock word. Stacked rows each are a whole name:
-    the upper line ends with a rock word AND the lower line starts with one."""
-    up = upper["parts"][-1]["words"] if "parts" in upper else upper["words"]
-    return _rock_word(up[-1]["text"]) and _rock_word(lower["words"][0]["text"])
+    A wrapped name breaks before its rock word ("Silty" / "Sandstone", "Dolomitic" /
+    "limestone", "Sandy and calcareous" / "dolomite"), so its upper line holds no complete rock
+    word yet. Stacked rows are whole names each: the upper line already contains a rock word
+    ("ANHYDRITE", "SHALE GRAY") and so does the lower ("BENTONITE", "SHALE COLORED")."""
+    parts = upper["parts"] if "parts" in upper else [upper]
+    up_has_rock = any(_rock_word(w["text"]) for p in parts for w in p["words"])
+    # a name has ONE rock noun, so a full rock word on both lines means two entries
+    # (Callaway: "SILTSTONE" / "SILTY SHALE", where the lower line starts with an adjective)
+    return up_has_rock and any(_rock_word(w["text"]) for w in lower["words"])
+
+
+JOINERS = {"or", "and", "of", "with", "not"}   # short real words in names ("SIDERITE or LIMONITE")
+# Short lithology terms and qualifiers (general geology vocabulary). Like rock words, they are
+# never treated as pattern junk even when OCR is unsure of them ("Argill and calc sand").
+NAME_WORDS = {"sand", "silt", "clay", "calc", "lime", "dolo", "sandy", "silty", "shaly",
+              "limy", "argill", "fine", "coarse", "medium", "red", "gray", "grey", "green", "black"}
+
+
+def _repetitive(text):
+    """OCR of a periodic hatch pattern repeats a few characters ("ateatatatatats")."""
+    t = re.sub(r"[^a-z]", "", text.lower())
+    return len(t) >= 6 and len(set(t)) / len(t) < 0.4
+
+
+def _pattern_junk(w):
+    """Text read off a swatch's pattern: low OCR confidence AND short or repetitive. Measured on
+    the Rio San Gabriel / Callaway legends: such junk scores 25-54 ("cote", "aes", "NNN", "=");
+    real words almost all score >= 61, and the one lower real word (LIMESTONE, 51) is long and
+    not repetitive, so it is kept."""
+    t = w["text"]
+    if (w["conf"] >= 60 or t.lower() in JOINERS or t == "-" or _rock_word(t)        # TILL, COAL
+            or re.sub(r"[^a-z]", "", t.lower()) in NAME_WORDS):
+        return False
+    return _alpha(t) < 5 or _repetitive(t)
+
+
+def _plausible_label(text):
+    """A label made of real words, not pattern junk: a word of 4+ letters, and not repetitive."""
+    return _alpha(text) >= 4 and not _repetitive(text)
 
 
 def ocr_labels(img, scale=None, min_conf=25, merge_gap=0.7):
@@ -113,6 +152,10 @@ def ocr_labels(img, scale=None, min_conf=25, merge_gap=0.7):
     real = [w["h"] for w in words if w["conf"] >= 50 and _alpha(w["text"]) >= 4]
     ref = float(np.median(real if len(real) >= 3 else [w["h"] for w in words]))
     words = [w for w in words if w["text"] in ("-", "–", "—") or 0.4 * ref <= w["h"] <= 2.2 * ref]
+    # Drop text OCR read off a swatch's pattern before chaining words into labels: otherwise it
+    # bridges the gap between one label and the next column's label (Rio San Gabriel:
+    # "SIDERITE or LIMONITE cote LIMESTONE", "MARLSTONE = - - - = = CLAYSTONE").
+    words = [w for w in words if not _pattern_junk(w)]
     if not words:
         return []
     med_h = ref
@@ -334,7 +377,10 @@ def cluster_columns(labels, tol=20, min_frac=0.5):
     # real label columns are far fuller than clusters of OCR junk read off the swatches
     if cols:
         biggest = max(len(c["items"]) for c in cols)
-        cols = [c for c in cols if len(c["items"]) >= max(3, min_frac * biggest)]
+        # ...but a short column whose every entry is a real word is a real column too: a legend
+        # with a 2-row rock grid beside an 8-row symbol list (Shell AC0336) lost all 8 rocks.
+        cols = [c for c in cols if len(c["items"]) >= max(3, min_frac * biggest)
+                or (len(c["items"]) >= 2 and all(_plausible_label(i["text"]) for i in c["items"]))]
     for c in cols:
         c["items"].sort(key=lambda l: l["y"])
     return cols
@@ -359,11 +405,17 @@ def strategy_left(img, labels, max_swatch_w=None):
         items = c["items"]
         ys = np.array([l["y"] + l["h"] / 2 for l in items])
         pitch = np.median(np.diff(ys)) if len(ys) > 1 else 25.0
-        # left bound: right edge of the previous column's labels
-        left = 0 if ci == 0 else max(l["x"] + l["w"] for l in cols[ci - 1]["items"]) + 2
+        def left_bound(cy):
+            # A swatch can't reach into the label beside it, but only labels on the SAME row
+            # bound it: a block of other entries above or below (ocs-g 16987's drilling symbols,
+            # 200 rows lower and offset) must not shrink the search window to nothing.
+            ends = [o["x"] + o["w"] for cj in range(ci) for o in cols[cj]["items"]
+                    if abs((o["y"] + o["h"] / 2) - cy) < pitch / 2 and o["x"] + o["w"] <= c["x"]]
+            return max(ends) + 2 if ends else 0
+
         for l in items:
             cy = l["y"] + l["h"] / 2
-            x0 = max(left, l["x"] - max_swatch_w)
+            x0 = max(left_bound(cy), l["x"] - max_swatch_w)
             bb = ink_bbox(mask, x0, cy - pitch / 2 + 1, l["x"] - 2, cy + pitch / 2 - 1)
             found.append((l, bb))
 
@@ -374,7 +426,7 @@ def strategy_left(img, labels, max_swatch_w=None):
             for k in range(1, n_missing + 1):
                 cy = a["y"] + a["h"] / 2 + k * gap / (n_missing + 1)
                 fake = dict(text="", x=c["x"], y=cy - a["h"] / 2, w=a["w"], h=a["h"])
-                x0 = max(left, c["x"] - max_swatch_w)
+                x0 = max(left_bound(cy), c["x"] - max_swatch_w)
                 found.append((fake, ink_bbox(mask, x0, cy - pitch / 2 + 1, c["x"] - 2, cy + pitch / 2 - 1)))
 
     boxes = [bb for _, bb in found if bb is not None]

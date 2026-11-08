@@ -36,7 +36,7 @@ Image.MAX_IMAGE_PIXELS = None
 COLOUR_MAX = 25.0    # Lab Delta-E: no swatch closer than this -> "unknown"
 COLOUR_TIE = 8.0     # swatches within this Delta-E of the best are colour-tied: texture decides
 # Legend entries that are drilling / log symbols, not rocks (ardennes lists casing, cores, DST).
-NOT_ROCK = re.compile(r"casing|core|\bdst\b|\bfit\b|shoe|show|survey|symbol|gas|oil|no sample|mud loss|mud gain", re.I)
+NOT_ROCK = re.compile(r"casing|core|\bdst\b|\bfit\b|shoe|show|survey|symbol|gas|oil|no sample|mud loss|mud gain|sample|^no$|^unknown$", re.I)
 SHAPE_TIE = 0.15     # shape distances this close are a tie (then the commoner rock wins)
 TRIM = 4             # px removed from patch edges (frames, column borders, boundary lines)
 SAMPLE_ROWS = 512    # rows of a cluster's tallest interval used to describe it
@@ -181,12 +181,20 @@ def best_swatch(d, swatches):
         if s["has_pattern"] != d["has_pattern"]:
             return 2.0                     # patterned vs plain: as different as it gets
         return float(np.abs(s["shapes"] - d["shapes"]).sum())
-    # Swatches that tie on shape (example: Shale and Clay are both pure horizontal dashes) are
-    # indistinguishable from the drawing. Prefer the more common rock: a stated prior, not a
-    # measurement, and the only thing that can decide such a tie.
-    best = min(dt(i) for i in tied)
-    close = [i for i in tied if dt(i) <= best + SHAPE_TIE]
-    return swatches[min(close, key=lambda i: (commonness(swatches[i][0]), dt(i)))][0]
+    # Among colour-tied swatches, colour still counts: score = colour distance (in units of the
+    # tie window, 0..1) + shape distance (0..2). Before, colour was ignored once inside the
+    # window, so an exact colour match lost to a swatch 7.5 Delta-E away whose dotted pattern
+    # happened to look like the column's tiny dashes (dc802: Clay Shale vs Silty clay-shale).
+    # Black-and-white legends are unaffected: all their colour distances are ~0.
+    def score(i):
+        return dc[i] / COLOUR_TIE + dt(i)
+
+    # Swatches that still tie (example: Shale and Clay are both pure horizontal dashes, both
+    # white) are indistinguishable from the drawing. Prefer the more common rock: a stated
+    # prior, not a measurement, and the only thing that can decide such a tie.
+    best = min(score(i) for i in tied)
+    close = [i for i in tied if score(i) <= best + SHAPE_TIE]
+    return swatches[min(close, key=lambda i: (commonness(swatches[i][0]), score(i)))][0]
 
 
 # Most to least common in mudlogs. Used ONLY to break ties the drawing can't decide.
